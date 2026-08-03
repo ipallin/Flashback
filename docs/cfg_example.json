@@ -1,0 +1,526 @@
+{
+  "schema_version": "1.0.0",
+  "metadata": {
+    "generator": "tfe-reconstructor",
+    "generator_version": "0.1.0",
+    "generation_timestamp": "2026-05-15T14:32:10Z",
+    "angr_version": "9.2.118",
+    "capstone_version": "5.0.1",
+    "pipeline_stage": "enriched",
+    "extensions": {}
+  },
+  "binary_info": {
+    "filename": "hello",
+    "path": "/home/igor/binarios_prueba/hello",
+    "sha256": "9f4e3c8a7b2d5e6f1a9c8b7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f",
+    "architecture": "amd64",
+    "bits": 64,
+    "endianness": "little",
+    "entry_point": "0x401040",
+    "format": "ELF",
+    "is_pie": false,
+    "is_stripped": false
+  },
+
+  "functions": {
+    "0x401130": {
+      "address": "0x401130",
+      "name": "suma",
+      "is_plt": false,
+      "is_external": false,
+      "entry_block": "0x401130",
+      "blocks": ["0x401130"],
+      "called_from": ["0x40115e"],
+      "calls_to": [],
+      "annotations": []
+    },
+    "0x401149": {
+      "address": "0x401149",
+      "name": "main",
+      "is_plt": false,
+      "is_external": false,
+      "entry_block": "0x401149",
+      "blocks": ["0x401149"],
+      "called_from": [],
+      "calls_to": ["0x401130", "0x401030"],
+      "annotations": []
+    },
+    "0x401030": {
+      "address": "0x401030",
+      "name": "printf",
+      "is_plt": true,
+      "is_external": true,
+      "entry_block": "0x401030",
+      "blocks": ["0x401030"],
+      "called_from": ["0x401175"],
+      "calls_to": [],
+      "annotations": [
+        {
+          "type": "external_call",
+          "added_by": "enricher",
+          "function_name": "printf",
+          "library": "libc.so.6",
+          "prototype": "int printf(const char *format, ...)",
+          "argument_registers": ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
+        }
+      ]
+    }
+  },
+
+  "basic_blocks": {
+    "0x401030": {
+      "address": "0x401030",
+      "size": 16,
+      "function": "0x401030",
+      "instructions": ["0x401030"],
+      "successors": [],
+      "predecessors": [],
+      "annotations": [
+        {
+          "type": "functional_class",
+          "added_by": "enricher",
+          "category": "external_call_site",
+          "description": "PLT stub for printf"
+        }
+      ]
+    },
+    "0x401130": {
+      "address": "0x401130",
+      "size": 25,
+      "function": "0x401130",
+      "instructions": [
+        "0x401130",
+        "0x401131",
+        "0x401134",
+        "0x401137",
+        "0x40113a",
+        "0x40113d",
+        "0x401140",
+        "0x401143",
+        "0x401147"
+      ],
+      "successors": [],
+      "predecessors": [],
+      "annotations": [
+        {
+          "type": "functional_class",
+          "added_by": "enricher",
+          "category": "function_body",
+          "description": "Simple arithmetic function with prologue, body, and epilogue"
+        },
+        {
+          "type": "trace_recommendation",
+          "added_by": "enricher",
+          "granularity": "block",
+          "rationale": "Short non-critical function body; block-level trace sufficient"
+        }
+      ]
+    },
+    "0x401149": {
+      "address": "0x401149",
+      "size": 50,
+      "function": "0x401149",
+      "instructions": [
+        "0x401149",
+        "0x40114a",
+        "0x40114d",
+        "0x401158",
+        "0x40115b",
+        "0x40115e",
+        "0x401163",
+        "0x401170",
+        "0x401175",
+        "0x40117a",
+        "0x40117c"
+      ],
+      "successors": [],
+      "predecessors": [],
+      "annotations": [
+        {
+          "type": "functional_class",
+          "added_by": "enricher",
+          "category": "external_call_site",
+          "description": "Block contains one or more external function calls"
+        },
+        {
+          "type": "trace_recommendation",
+          "added_by": "enricher",
+          "granularity": "selective",
+          "rationale": "Block contains external calls requiring fine-grained tracing at call sites"
+        }
+      ]
+    }
+  },
+
+  "instructions": {
+    "0x401030": {
+      "address": "0x401030",
+      "mnemonic": "jmp",
+      "operands": "qword ptr [rip + 0x2fca]",
+      "bytes": "ff25ca2f0000",
+      "size": 6,
+      "block": "0x401030",
+      "registers_read": ["rip"],
+      "registers_written": ["rip"],
+      "memory_accesses": [
+        {"type": "read", "size": 8, "base_register": "rip", "index_register": null, "scale": 1, "offset": 12234}
+      ],
+      "annotations": []
+    },
+    "0x401130": {
+      "address": "0x401130",
+      "mnemonic": "push",
+      "operands": "rbp",
+      "bytes": "55",
+      "size": 1,
+      "block": "0x401130",
+      "registers_read": ["rsp", "rbp"],
+      "registers_written": ["rsp"],
+      "memory_accesses": [
+        {
+          "type": "write",
+          "size": 8,
+          "base_register": "rsp",
+          "index_register": null,
+          "scale": 1,
+          "offset": -8
+        }
+      ],
+      "annotations": []
+    },
+    "0x401131": {
+      "address": "0x401131",
+      "mnemonic": "mov",
+      "operands": "rbp, rsp",
+      "bytes": "4889e5",
+      "size": 3,
+      "block": "0x401130",
+      "registers_read": ["rsp"],
+      "registers_written": ["rbp"],
+      "memory_accesses": [],
+      "annotations": []
+    },
+    "0x401134": {
+      "address": "0x401134",
+      "mnemonic": "mov",
+      "operands": "dword ptr [rbp - 4], edi",
+      "bytes": "897dfc",
+      "size": 3,
+      "block": "0x401130",
+      "registers_read": ["rbp", "edi"],
+      "registers_written": [],
+      "memory_accesses": [
+        {
+          "type": "write",
+          "size": 4,
+          "base_register": "rbp",
+          "index_register": null,
+          "scale": 1,
+          "offset": -4
+        }
+      ],
+      "annotations": []
+    },
+    "0x401137": {
+      "address": "0x401137",
+      "mnemonic": "mov",
+      "operands": "dword ptr [rbp - 8], esi",
+      "bytes": "8975f8",
+      "size": 3,
+      "block": "0x401130",
+      "registers_read": ["rbp", "esi"],
+      "registers_written": [],
+      "memory_accesses": [
+        {
+          "type": "write",
+          "size": 4,
+          "base_register": "rbp",
+          "index_register": null,
+          "scale": 1,
+          "offset": -8
+        }
+      ],
+      "annotations": []
+    },
+    "0x40113a": {
+      "address": "0x40113a",
+      "mnemonic": "mov",
+      "operands": "edx, dword ptr [rbp - 4]",
+      "bytes": "8b55fc",
+      "size": 3,
+      "block": "0x401130",
+      "registers_read": ["rbp"],
+      "registers_written": ["edx"],
+      "memory_accesses": [
+        {
+          "type": "read",
+          "size": 4,
+          "base_register": "rbp",
+          "index_register": null,
+          "scale": 1,
+          "offset": -4
+        }
+      ],
+      "annotations": []
+    },
+    "0x40113d": {
+      "address": "0x40113d",
+      "mnemonic": "mov",
+      "operands": "eax, dword ptr [rbp - 8]",
+      "bytes": "8b45f8",
+      "size": 3,
+      "block": "0x401130",
+      "registers_read": ["rbp"],
+      "registers_written": ["eax"],
+      "memory_accesses": [
+        {
+          "type": "read",
+          "size": 4,
+          "base_register": "rbp",
+          "index_register": null,
+          "scale": 1,
+          "offset": -8
+        }
+      ],
+      "annotations": []
+    },
+    "0x401140": {
+      "address": "0x401140",
+      "mnemonic": "add",
+      "operands": "eax, edx",
+      "bytes": "01d0",
+      "size": 2,
+      "block": "0x401130",
+      "registers_read": ["eax", "edx"],
+      "registers_written": ["eax"],
+      "memory_accesses": [],
+      "annotations": []
+    },
+    "0x401143": {
+      "address": "0x401143",
+      "mnemonic": "pop",
+      "operands": "rbp",
+      "bytes": "5d",
+      "size": 1,
+      "block": "0x401130",
+      "registers_read": ["rsp"],
+      "registers_written": ["rbp", "rsp"],
+      "memory_accesses": [
+        {
+          "type": "read",
+          "size": 8,
+          "base_register": "rsp",
+          "index_register": null,
+          "scale": 1,
+          "offset": 0
+        }
+      ],
+      "annotations": []
+    },
+    "0x401147": {
+      "address": "0x401147",
+      "mnemonic": "ret",
+      "operands": "",
+      "bytes": "c3",
+      "size": 1,
+      "block": "0x401130",
+      "registers_read": ["rsp"],
+      "registers_written": ["rsp"],
+      "memory_accesses": [
+        {
+          "type": "read",
+          "size": 8,
+          "base_register": "rsp",
+          "index_register": null,
+          "scale": 1,
+          "offset": 0
+        }
+      ],
+      "annotations": []
+    },
+    "0x401175": {
+      "address": "0x401175",
+      "mnemonic": "call",
+      "operands": "0x401030",
+      "bytes": "e8b6feffff",
+      "size": 5,
+      "block": "0x401149",
+      "registers_read": ["rsp", "rip"],
+      "registers_written": ["rsp", "rip"],
+      "memory_accesses": [
+        {
+          "type": "write",
+          "size": 8,
+          "base_register": "rsp",
+          "index_register": null,
+          "scale": 1,
+          "offset": -8
+        }
+      ],
+      "annotations": [
+        {
+          "type": "external_call",
+          "added_by": "enricher",
+          "function_name": "printf",
+          "library": "libc.so.6",
+          "prototype": "int printf(const char *format, ...)",
+          "argument_registers": ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
+        },
+        {
+          "type": "trace_point",
+          "added_by": "enricher",
+          "reason": "external_call_site"
+        }
+      ]
+    },
+    "0x401149": {
+      "address": "0x401149",
+      "mnemonic": "push",
+      "operands": "rbp",
+      "bytes": "55",
+      "size": 1,
+      "block": "0x401149",
+      "registers_read": ["rsp", "rbp"],
+      "registers_written": ["rsp"],
+      "memory_accesses": [
+        {"type": "write", "size": 8, "base_register": "rsp", "index_register": null, "scale": 1, "offset": -8}
+      ],
+      "annotations": []
+    },
+    "0x40114a": {
+      "address": "0x40114a",
+      "mnemonic": "mov",
+      "operands": "rbp, rsp",
+      "bytes": "4889e5",
+      "size": 3,
+      "block": "0x401149",
+      "registers_read": ["rsp"],
+      "registers_written": ["rbp"],
+      "memory_accesses": [],
+      "annotations": []
+    },
+    "0x40114d": {
+      "address": "0x40114d",
+      "mnemonic": "sub",
+      "operands": "rsp, 0x10",
+      "bytes": "4883ec10",
+      "size": 4,
+      "block": "0x401149",
+      "registers_read": ["rsp"],
+      "registers_written": ["rsp"],
+      "memory_accesses": [],
+      "annotations": []
+    },
+    "0x401158": {
+      "address": "0x401158",
+      "mnemonic": "mov",
+      "operands": "esi, 4",
+      "bytes": "be04000000",
+      "size": 5,
+      "block": "0x401149",
+      "registers_read": [],
+      "registers_written": ["esi"],
+      "memory_accesses": [],
+      "annotations": []
+    },
+    "0x40115b": {
+      "address": "0x40115b",
+      "mnemonic": "mov",
+      "operands": "edi, 3",
+      "bytes": "bf03000000",
+      "size": 5,
+      "block": "0x401149",
+      "registers_read": [],
+      "registers_written": ["edi"],
+      "memory_accesses": [],
+      "annotations": []
+    },
+    "0x40115e": {
+      "address": "0x40115e",
+      "mnemonic": "call",
+      "operands": "0x401130",
+      "bytes": "e8cdffffff",
+      "size": 5,
+      "block": "0x401149",
+      "registers_read": ["rsp", "rip"],
+      "registers_written": ["rsp", "rip"],
+      "memory_accesses": [
+        {"type": "write", "size": 8, "base_register": "rsp", "index_register": null, "scale": 1, "offset": -8}
+      ],
+      "annotations": []
+    },
+    "0x401163": {
+      "address": "0x401163",
+      "mnemonic": "mov",
+      "operands": "dword ptr [rbp - 4], eax",
+      "bytes": "8945fc",
+      "size": 3,
+      "block": "0x401149",
+      "registers_read": ["rbp", "eax"],
+      "registers_written": [],
+      "memory_accesses": [
+        {"type": "write", "size": 4, "base_register": "rbp", "index_register": null, "scale": 1, "offset": -4}
+      ],
+      "annotations": []
+    },
+    "0x401170": {
+      "address": "0x401170",
+      "mnemonic": "mov",
+      "operands": "esi, dword ptr [rbp - 4]",
+      "bytes": "8b75fc",
+      "size": 3,
+      "block": "0x401149",
+      "registers_read": ["rbp"],
+      "registers_written": ["esi"],
+      "memory_accesses": [
+        {"type": "read", "size": 4, "base_register": "rbp", "index_register": null, "scale": 1, "offset": -4}
+      ],
+      "annotations": []
+    },
+    "0x40117a": {
+      "address": "0x40117a",
+      "mnemonic": "leave",
+      "operands": "",
+      "bytes": "c9",
+      "size": 1,
+      "block": "0x401149",
+      "registers_read": ["rbp", "rsp"],
+      "registers_written": ["rbp", "rsp"],
+      "memory_accesses": [
+        {"type": "read", "size": 8, "base_register": "rbp", "index_register": null, "scale": 1, "offset": 0}
+      ],
+      "annotations": []
+    },
+    "0x40117c": {
+      "address": "0x40117c",
+      "mnemonic": "ret",
+      "operands": "",
+      "bytes": "c3",
+      "size": 1,
+      "block": "0x401149",
+      "registers_read": ["rsp"],
+      "registers_written": ["rsp"],
+      "memory_accesses": [
+        {"type": "read", "size": 8, "base_register": "rsp", "index_register": null, "scale": 1, "offset": 0}
+      ],
+      "annotations": []
+    }
+  },
+
+  "edges": [
+    {
+      "source": "0x40115e",
+      "target": "0x401130",
+      "type": "call",
+      "condition": null,
+      "annotations": []
+    },
+    {
+      "source": "0x401175",
+      "target": "0x401030",
+      "type": "call",
+      "condition": null,
+      "annotations": []
+    }
+  ]
+}

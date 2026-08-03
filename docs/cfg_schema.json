@@ -1,0 +1,643 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tfe-igor-pallin/schemas/cfg-enriched/1.0.0",
+  "title": "Enriched CFG Schema",
+  "description": "Schema for the enriched Control Flow Graph used in the binary-to-C reconstruction pipeline",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "metadata",
+    "binary_info",
+    "functions",
+    "basic_blocks",
+    "instructions",
+    "edges"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version of the schema this file conforms to"
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "generator",
+        "generator_version",
+        "generation_timestamp",
+        "pipeline_stage"
+      ],
+      "properties": {
+        "generator": {
+          "type": "string"
+        },
+        "generator_version": {
+          "type": "string"
+        },
+        "generation_timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "angr_version": {
+          "type": "string"
+        },
+        "capstone_version": {
+          "type": "string"
+        },
+        "lief_version": {
+          "type": "string"
+        },
+        "pyelftools_version": {
+          "type": "string"
+        },
+        "pipeline_stage": {
+          "type": "string",
+          "enum": [
+            "initial",
+            "enriched"
+          ]
+        },
+        "extensions": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "binary_info": {
+      "type": "object",
+      "required": [
+        "filename",
+        "sha256",
+        "architecture",
+        "bits",
+        "endianness",
+        "entry_point",
+        "format"
+      ],
+      "properties": {
+        "filename": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "architecture": {
+          "type": "string",
+          "enum": [
+            "amd64"
+          ]
+        },
+        "bits": {
+          "type": "integer",
+          "enum": [
+            64
+          ]
+        },
+        "endianness": {
+          "type": "string",
+          "enum": [
+            "little"
+          ]
+        },
+        "entry_point": {
+          "$ref": "#/definitions/hex_address"
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "ELF"
+          ]
+        },
+        "is_pie": {
+          "type": "boolean"
+        },
+        "is_stripped": {
+          "type": "boolean"
+        },
+        "rodata_va": {
+          "type": "integer"
+        },
+        "rodata_hex": {
+          "type": "string"
+        },
+        "data_va": {
+          "type": "integer"
+        },
+        "data_hex": {
+          "type": "string"
+        },
+        "bss_va": {
+          "type": "integer"
+        },
+        "bss_size": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "functions": {
+      "type": "object",
+      "patternProperties": {
+        "^0x[0-9a-f]+$": {
+          "$ref": "#/definitions/function"
+        }
+      },
+      "additionalProperties": false
+    },
+    "basic_blocks": {
+      "type": "object",
+      "patternProperties": {
+        "^0x[0-9a-f]+$": {
+          "$ref": "#/definitions/basic_block"
+        }
+      },
+      "additionalProperties": false
+    },
+    "instructions": {
+      "type": "object",
+      "patternProperties": {
+        "^0x[0-9a-f]+$": {
+          "$ref": "#/definitions/instruction"
+        }
+      },
+      "additionalProperties": false
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/edge"
+      }
+    }
+  },
+  "definitions": {
+    "hex_address": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]+$",
+      "description": "Hexadecimal address with 0x prefix, lowercase"
+    },
+    "function": {
+      "type": "object",
+      "required": [
+        "address",
+        "name",
+        "is_plt",
+        "is_external",
+        "entry_block",
+        "blocks",
+        "called_from",
+        "calls_to",
+        "annotations"
+      ],
+      "properties": {
+        "address": {
+          "$ref": "#/definitions/hex_address"
+        },
+        "name": {
+          "type": "string"
+        },
+        "is_plt": {
+          "type": "boolean"
+        },
+        "is_external": {
+          "type": "boolean"
+        },
+        "entry_block": {
+          "$ref": "#/definitions/hex_address"
+        },
+        "blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/hex_address"
+          }
+        },
+        "called_from": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/hex_address"
+          }
+        },
+        "calls_to": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/hex_address"
+          }
+        },
+        "annotations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/annotation"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "basic_block": {
+      "type": "object",
+      "required": [
+        "address",
+        "size",
+        "function",
+        "instructions",
+        "successors",
+        "predecessors",
+        "annotations"
+      ],
+      "properties": {
+        "address": {
+          "$ref": "#/definitions/hex_address"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "function": {
+          "$ref": "#/definitions/hex_address"
+        },
+        "instructions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/hex_address"
+          }
+        },
+        "successors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/hex_address"
+          }
+        },
+        "predecessors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/hex_address"
+          }
+        },
+        "annotations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/annotation"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "instruction": {
+      "type": "object",
+      "required": [
+        "address",
+        "mnemonic",
+        "operands",
+        "bytes",
+        "size",
+        "block",
+        "registers_read",
+        "registers_written",
+        "memory_accesses",
+        "annotations"
+      ],
+      "properties": {
+        "address": {
+          "$ref": "#/definitions/hex_address"
+        },
+        "mnemonic": {
+          "type": "string"
+        },
+        "operands": {
+          "type": "string"
+        },
+        "bytes": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{2})+$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "block": {
+          "$ref": "#/definitions/hex_address"
+        },
+        "registers_read": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "registers_written": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "memory_accesses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/memory_access"
+          }
+        },
+        "annotations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/annotation"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "memory_access": {
+      "type": "object",
+      "required": [
+        "type",
+        "size",
+        "scale",
+        "offset"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write",
+            "read_write"
+          ]
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "base_register": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "index_register": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scale": {
+          "type": "integer",
+          "enum": [
+            1,
+            2,
+            4,
+            8
+          ]
+        },
+        "offset": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "edge": {
+      "type": "object",
+      "required": [
+        "source",
+        "target",
+        "type",
+        "annotations"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/definitions/hex_address"
+        },
+        "target": {
+          "$ref": "#/definitions/hex_address"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "fall_through",
+            "unconditional_jump",
+            "conditional_jump",
+            "call",
+            "call_indirect",
+            "return",
+            "indirect_jump",
+            "syscall"
+          ]
+        },
+        "condition": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "annotations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/annotation"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "type": {
+            "const": "conditional_jump"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "condition": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "annotation": {
+      "type": "object",
+      "required": [
+        "type",
+        "added_by"
+      ],
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "added_by": {
+          "type": "string"
+        }
+      },
+      "oneOf": [
+        {
+          "$ref": "#/definitions/annotation_external_call"
+        },
+        {
+          "$ref": "#/definitions/annotation_syscall"
+        },
+        {
+          "$ref": "#/definitions/annotation_functional_class"
+        },
+        {
+          "$ref": "#/definitions/annotation_trace_recommendation"
+        },
+        {
+          "$ref": "#/definitions/annotation_trace_point"
+        }
+      ]
+    },
+    "annotation_external_call": {
+      "type": "object",
+      "required": [
+        "type",
+        "added_by",
+        "function_name",
+        "library"
+      ],
+      "properties": {
+        "type": {
+          "const": "external_call"
+        },
+        "added_by": {
+          "type": "string"
+        },
+        "function_name": {
+          "type": "string"
+        },
+        "library": {
+          "type": "string"
+        },
+        "prototype": {
+          "type": "string"
+        },
+        "argument_registers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotation_syscall": {
+      "type": "object",
+      "required": [
+        "type",
+        "added_by",
+        "syscall_number"
+      ],
+      "properties": {
+        "type": {
+          "const": "syscall"
+        },
+        "added_by": {
+          "type": "string"
+        },
+        "syscall_number": {
+          "type": "integer",
+          "minimum": -1
+        },
+        "syscall_name": {
+          "type": "string"
+        },
+        "argument_registers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "return_register": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotation_functional_class": {
+      "type": "object",
+      "required": [
+        "type",
+        "added_by",
+        "category"
+      ],
+      "properties": {
+        "type": {
+          "const": "functional_class"
+        },
+        "added_by": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "function_prologue",
+            "function_epilogue",
+            "function_body",
+            "external_call_site",
+            "syscall_site",
+            "loop_header",
+            "return_block",
+            "unreachable"
+          ]
+        },
+        "description": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotation_trace_recommendation": {
+      "type": "object",
+      "required": [
+        "type",
+        "added_by",
+        "granularity"
+      ],
+      "properties": {
+        "type": {
+          "const": "trace_recommendation"
+        },
+        "added_by": {
+          "type": "string"
+        },
+        "granularity": {
+          "type": "string",
+          "enum": [
+            "none",
+            "block",
+            "instruction",
+            "selective"
+          ]
+        },
+        "rationale": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotation_trace_point": {
+      "type": "object",
+      "required": [
+        "type",
+        "added_by",
+        "reason"
+      ],
+      "properties": {
+        "type": {
+          "const": "trace_point"
+        },
+        "added_by": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "block_entry",
+            "external_call_site",
+            "syscall_site",
+            "loop_backedge",
+            "user_request"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

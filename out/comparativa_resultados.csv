@@ -1,0 +1,17 @@
+herramienta,binario,M1,M2,M3,M4,detalle
+RetDec,01_hello_nopie,1,1,1,0,
+RetDec,02_switch,1,1,1,0,
+RetDec,03_recursive,1,1,1,0,
+RetDec,04_strings,1,1,1,0,
+RetDec,05_loops,1,1,1,0,
+RetDec,06_syscalls,1,0,0,0,no compila: /home/debian/Flashback-dbg/out/retdec/06_syscalls/06_syscalls.c: In function ‘main’: /home/debian/Flashback-dbg/out/retdec/06_syscalls/06_syscalls.c:20:12: error: returning ‘int32_t *’ {aka ‘int *’} f
+RetDec,07_funcptr,1,1,0,0,salida distinta (exit orig=0 got=0)
+RetDec,08_memory,1,1,1,0,
+McSema/Rellic,01_hello_nopie,0,0,0,0,no evaluable: McSema/Rellic no desplegables en este entorno
+McSema/Rellic,02_switch,0,0,0,0,no evaluable: McSema/Rellic no desplegables en este entorno
+McSema/Rellic,03_recursive,0,0,0,0,no evaluable: McSema/Rellic no desplegables en este entorno
+McSema/Rellic,04_strings,0,0,0,0,no evaluable: McSema/Rellic no desplegables en este entorno
+McSema/Rellic,05_loops,0,0,0,0,no evaluable: McSema/Rellic no desplegables en este entorno
+McSema/Rellic,06_syscalls,0,0,0,0,no evaluable: McSema/Rellic no desplegables en este entorno
+McSema/Rellic,07_funcptr,0,0,0,0,no evaluable: McSema/Rellic no desplegables en este entorno
+McSema/Rellic,08_memory,0,0,0,0,no evaluable: McSema/Rellic no desplegables en este entorno

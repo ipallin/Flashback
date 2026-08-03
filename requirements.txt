@@ -1,0 +1,5 @@
+capstone>=5.0.0
+lief>=0.14.0
+networkx>=3.0
+pyelftools>=0.30
+jsonschema>=4.0

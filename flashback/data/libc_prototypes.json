@@ -1,0 +1,740 @@
+{
+  "printf": {
+    "proto": "int printf(const char *format, ...)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx",
+      "rcx",
+      "r8",
+      "r9"
+    ],
+    "classification": "IO"
+  },
+  "fprintf": {
+    "proto": "int fprintf(FILE *stream, const char *format, ...)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx",
+      "rcx",
+      "r8",
+      "r9"
+    ],
+    "classification": "IO"
+  },
+  "scanf": {
+    "proto": "int scanf(const char *format, ...)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx",
+      "rcx",
+      "r8",
+      "r9"
+    ],
+    "classification": "IO"
+  },
+  "fscanf": {
+    "proto": "int fscanf(FILE *stream, const char *format, ...)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx",
+      "rcx",
+      "r8",
+      "r9"
+    ],
+    "classification": "IO"
+  },
+  "puts": {
+    "proto": "int puts(const char *s)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "IO"
+  },
+  "putchar": {
+    "proto": "int putchar(int c)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "IO"
+  },
+  "getchar": {
+    "proto": "int getchar(void)",
+    "args": [],
+    "classification": "IO"
+  },
+  "fgets": {
+    "proto": "char *fgets(char *s, int size, FILE *stream)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "IO"
+  },
+  "fputs": {
+    "proto": "int fputs(const char *s, FILE *stream)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "IO"
+  },
+  "fgetc": {
+    "proto": "int fgetc(FILE *stream)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "IO"
+  },
+  "fputc": {
+    "proto": "int fputc(int c, FILE *stream)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "IO"
+  },
+  "fopen": {
+    "proto": "FILE *fopen(const char *pathname, const char *mode)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "FS"
+  },
+  "fclose": {
+    "proto": "int fclose(FILE *stream)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "FS"
+  },
+  "fread": {
+    "proto": "size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx",
+      "rcx"
+    ],
+    "classification": "FS"
+  },
+  "fwrite": {
+    "proto": "size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx",
+      "rcx"
+    ],
+    "classification": "FS"
+  },
+  "fflush": {
+    "proto": "int fflush(FILE *stream)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "FS"
+  },
+  "fseek": {
+    "proto": "int fseek(FILE *stream, long offset, int whence)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "FS"
+  },
+  "ftell": {
+    "proto": "long ftell(FILE *stream)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "FS"
+  },
+  "rewind": {
+    "proto": "void rewind(FILE *stream)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "FS"
+  },
+  "open": {
+    "proto": "int open(const char *pathname, int flags, ...)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "FS"
+  },
+  "read": {
+    "proto": "ssize_t read(int fd, void *buf, size_t count)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "IO"
+  },
+  "write": {
+    "proto": "ssize_t write(int fd, const void *buf, size_t count)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "IO"
+  },
+  "close": {
+    "proto": "int close(int fd)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "FS"
+  },
+  "stat": {
+    "proto": "int stat(const char *pathname, struct stat *statbuf)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "FS"
+  },
+  "unlink": {
+    "proto": "int unlink(const char *pathname)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "FS"
+  },
+  "rename": {
+    "proto": "int rename(const char *oldpath, const char *newpath)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "FS"
+  },
+  "malloc": {
+    "proto": "void *malloc(size_t size)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "MEM"
+  },
+  "calloc": {
+    "proto": "void *calloc(size_t nmemb, size_t size)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "MEM"
+  },
+  "realloc": {
+    "proto": "void *realloc(void *ptr, size_t size)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "MEM"
+  },
+  "free": {
+    "proto": "void free(void *ptr)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "MEM"
+  },
+  "mmap": {
+    "proto": "void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx",
+      "rcx",
+      "r8",
+      "r9"
+    ],
+    "classification": "MEM"
+  },
+  "munmap": {
+    "proto": "int munmap(void *addr, size_t len)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "MEM"
+  },
+  "memcpy": {
+    "proto": "void *memcpy(void *dest, const void *src, size_t n)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "MEM"
+  },
+  "memset": {
+    "proto": "void *memset(void *s, int c, size_t n)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "MEM"
+  },
+  "memmove": {
+    "proto": "void *memmove(void *dest, const void *src, size_t n)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "MEM"
+  },
+  "memcmp": {
+    "proto": "int memcmp(const void *s1, const void *s2, size_t n)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "MEM"
+  },
+  "strlen": {
+    "proto": "size_t strlen(const char *s)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "MEM"
+  },
+  "strcpy": {
+    "proto": "char *strcpy(char *dest, const char *src)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "MEM"
+  },
+  "strncpy": {
+    "proto": "char *strncpy(char *dest, const char *src, size_t n)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "MEM"
+  },
+  "strcat": {
+    "proto": "char *strcat(char *dest, const char *src)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "MEM"
+  },
+  "strncat": {
+    "proto": "char *strncat(char *dest, const char *src, size_t n)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "MEM"
+  },
+  "strcmp": {
+    "proto": "int strcmp(const char *s1, const char *s2)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "MEM"
+  },
+  "strncmp": {
+    "proto": "int strncmp(const char *s1, const char *s2, size_t n)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "MEM"
+  },
+  "strchr": {
+    "proto": "char *strchr(const char *s, int c)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "MEM"
+  },
+  "strstr": {
+    "proto": "char *strstr(const char *haystack, const char *needle)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "MEM"
+  },
+  "atoi": {
+    "proto": "int atoi(const char *nptr)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "MEM"
+  },
+  "atol": {
+    "proto": "long atol(const char *nptr)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "MEM"
+  },
+  "strtol": {
+    "proto": "long strtol(const char *nptr, char **endptr, int base)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "MEM"
+  },
+  "strtoul": {
+    "proto": "unsigned long strtoul(const char *nptr, char **endptr, int base)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "MEM"
+  },
+  "exit": {
+    "proto": "void exit(int status)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "PROC"
+  },
+  "abort": {
+    "proto": "void abort(void)",
+    "args": [],
+    "classification": "PROC"
+  },
+  "fork": {
+    "proto": "pid_t fork(void)",
+    "args": [],
+    "classification": "PROC"
+  },
+  "execve": {
+    "proto": "int execve(const char *pathname, char *const argv[], char *const envp[])",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "PROC"
+  },
+  "waitpid": {
+    "proto": "pid_t waitpid(pid_t pid, int *wstatus, int options)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "PROC"
+  },
+  "getpid": {
+    "proto": "pid_t getpid(void)",
+    "args": [],
+    "classification": "PROC"
+  },
+  "getppid": {
+    "proto": "pid_t getppid(void)",
+    "args": [],
+    "classification": "PROC"
+  },
+  "signal": {
+    "proto": "sighandler_t signal(int signum, sighandler_t handler)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "PROC"
+  },
+  "perror": {
+    "proto": "void perror(const char *s)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "IO"
+  },
+  "socket": {
+    "proto": "int socket(int domain, int type, int protocol)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "NET"
+  },
+  "connect": {
+    "proto": "int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "NET"
+  },
+  "bind": {
+    "proto": "int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "NET"
+  },
+  "listen": {
+    "proto": "int listen(int sockfd, int backlog)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "NET"
+  },
+  "accept": {
+    "proto": "int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "NET"
+  },
+  "send": {
+    "proto": "ssize_t send(int sockfd, const void *buf, size_t len, int flags)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx",
+      "rcx"
+    ],
+    "classification": "NET"
+  },
+  "recv": {
+    "proto": "ssize_t recv(int sockfd, void *buf, size_t len, int flags)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx",
+      "rcx"
+    ],
+    "classification": "NET"
+  },
+  "setsockopt": {
+    "proto": "int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx",
+      "rcx",
+      "r8"
+    ],
+    "classification": "NET"
+  },
+  "getsockopt": {
+    "proto": "int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx",
+      "rcx",
+      "r8"
+    ],
+    "classification": "NET"
+  },
+  "htons": {
+    "proto": "uint16_t htons(uint16_t hostshort)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "NET"
+  },
+  "htonl": {
+    "proto": "uint32_t htonl(uint32_t hostlong)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "NET"
+  },
+  "inet_addr": {
+    "proto": "in_addr_t inet_addr(const char *cp)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "NET"
+  },
+  "snprintf": {
+    "proto": "int snprintf(char *str, size_t size, const char *format, ...)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx",
+      "rcx",
+      "r8",
+      "r9"
+    ],
+    "classification": "IO"
+  },
+  "sprintf": {
+    "proto": "int sprintf(char *str, const char *format, ...)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx",
+      "rcx",
+      "r8",
+      "r9"
+    ],
+    "classification": "IO"
+  },
+  "sscanf": {
+    "proto": "int sscanf(const char *str, const char *format, ...)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx",
+      "rcx",
+      "r8",
+      "r9"
+    ],
+    "classification": "IO"
+  },
+  "vprintf": {
+    "proto": "int vprintf(const char *format, va_list ap)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "IO"
+  },
+  "vsnprintf": {
+    "proto": "int vsnprintf(char *str, size_t size, const char *format, va_list ap)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx",
+      "rcx"
+    ],
+    "classification": "IO"
+  },
+  "strnlen": {
+    "proto": "size_t strnlen(const char *s, size_t maxlen)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "string"
+  },
+  "strcasecmp": {
+    "proto": "int strcasecmp(const char *s1, const char *s2)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "string"
+  },
+  "strncasecmp": {
+    "proto": "int strncasecmp(const char *s1, const char *s2, size_t n)",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx"
+    ],
+    "classification": "string"
+  },
+  "strdup": {
+    "proto": "char *strdup(const char *s)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "string"
+  },
+  "strtod": {
+    "proto": "double strtod(const char *nptr, char **endptr)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "conversion"
+  },
+  "getenv": {
+    "proto": "char *getenv(const char *name)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "env"
+  },
+  "strerror": {
+    "proto": "char *strerror(int errnum)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "error"
+  },
+  "qsort": {
+    "proto": "void qsort(void *base, size_t nmemb, size_t size, int (*compar)(const void *, const void *))",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx",
+      "rcx"
+    ],
+    "classification": "algorithm"
+  },
+  "bsearch": {
+    "proto": "void *bsearch(const void *key, const void *base, size_t nmemb, size_t size, int (*compar)(const void *, const void *))",
+    "args": [
+      "rdi",
+      "rsi",
+      "rdx",
+      "rcx",
+      "r8"
+    ],
+    "classification": "algorithm"
+  },
+  "abs": {
+    "proto": "int abs(int j)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "math"
+  },
+  "labs": {
+    "proto": "long labs(long j)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "math"
+  },
+  "sqrt": {
+    "proto": "double sqrt(double x)",
+    "args": [
+      "rdi"
+    ],
+    "classification": "math"
+  },
+  "pow": {
+    "proto": "double pow(double x, double y)",
+    "args": [
+      "rdi",
+      "rsi"
+    ],
+    "classification": "math"
+  }
+}
