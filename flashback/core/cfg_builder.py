@@ -20,10 +20,29 @@ from pathlib import Path
 
 from flashback.core.models import (
     EnrichedCFG, Function, BasicBlock, Instruction, Edge,
-    Metadata, BinaryInfo, hex_addr, JumpTableAnnotation,
+    Metadata, BinaryInfo, hex_addr, JumpTableAnnotation, LiteralLoadAnnotation,
+    UNKNOWN_TARGET,
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Flow:
+    """
+    Efecto de una instrucción terminadora sobre el flujo de control.
+
+    kind:
+      'branch'        salto directo (si el target no se resuelve se trata como indirecto)
+      'indirect_jump' salto a registro/memoria (bx rN, ldr pc, tbb...)
+      'call'          llamada (directa o indirecta según se resuelva el target)
+      'return'        retorno de función
+      'syscall'       llamada al sistema (continúa en fall-through)
+      'halt'          detiene la ejecución
+    conditional: la instrucción puede no ejecutarse y continuar en fall-through.
+    """
+    kind: str
+    conditional: bool = False
 
 
 @dataclass
@@ -37,6 +56,9 @@ class ArchMnemonics:
     halts: frozenset           # halt-like (0 sucesores)
     # Resolver de target: (mnemonic, operands) -> int | None
     target_resolver: Optional[Callable[[str, str], Optional[int]]] = None
+    # Clasificador propio (mnemonic, operands) -> Flow | None. Necesario cuando
+    # el mnemónico no basta (ARM: 'bx lr' vs 'bx r3', 'pop {pc}', sufijos .w/cond).
+    classifier: Optional[Callable[[str, str], Optional[Flow]]] = None
 
     @property
     def all_terminators(self) -> frozenset:
@@ -47,6 +69,25 @@ class ArchMnemonics:
         if self.target_resolver is not None:
             return self.target_resolver(mnemonic, operands)
         return _resolve_direct_addr(operands)
+
+    def flow(self, ri: 'RawInstruction') -> Optional[Flow]:
+        """Clasifica una instrucción; None si no termina el bloque."""
+        if self.classifier is not None:
+            return self.classifier(ri.mnemonic, ri.operands)
+        m = ri.mnemonic
+        if m in self.returns:
+            return Flow('return')
+        if m in self.syscalls:
+            return Flow('syscall')
+        if m in self.halts:
+            return Flow('halt')
+        if m in self.calls:
+            return Flow('call')
+        if m in self.uncond_jumps:
+            return Flow('branch')
+        if m in self.cond_branches:
+            return Flow('branch', conditional=True)
+        return None
 
 
 @dataclass
@@ -85,6 +126,11 @@ class BinaryMeta:
     jump_tables: dict = field(default_factory=dict)
     #   addr_del_jmp → nombre del registro índice ('rax', 'rcx', ...)
     jump_table_index_regs: dict = field(default_factory=dict)
+    # Cargas relativas a pc: addr_instrucción → (addr_literal, bytes leídos)
+    literals: dict = field(default_factory=dict)
+    # Funciones que no retornan detectadas por el disassembler (además de las
+    # reconocidas por nombre, ver NORETURN_NAMES)
+    noreturn: set = field(default_factory=set)
 
 
 class CFGBuilder:
@@ -139,13 +185,20 @@ class CFGBuilder:
                 address=addr_str, name=plt_name,
                 is_plt=True, is_external=True,
                 entry_block=addr_str,
+                is_noreturn=is_noreturn_name(plt_name),
             )
 
         # 2. Identificar todos los bloques básicos
         func_starts = set(meta.func_symbols.keys())
         arch_m = self._arch_m
+        noreturn = set(meta.noreturn) | {
+            addr for addr, name in {**meta.func_symbols, **meta.plt_symbols}.items()
+            if is_noreturn_name(name)
+        }
         block_starts = _identify_block_starts(raw_insns, func_starts, arch_m,
-                                              jump_tables=meta.jump_tables)
+                                              jump_tables=meta.jump_tables,
+                                              plt_addrs=set(meta.plt_symbols),
+                                              noreturn=noreturn)
         raw_blocks   = _build_raw_blocks(raw_insns, block_starts, arch_m)
 
         # 3. Asignar cada bloque a una función
@@ -165,6 +218,7 @@ class CFGBuilder:
                 is_plt=False, is_external=False,
                 entry_block=addr_str,
                 blocks=[hex_addr(b) for b in block_list],
+                is_noreturn=func_addr in noreturn,
             )
 
         # 5. Construir bloques e instrucciones
@@ -188,12 +242,16 @@ class CFGBuilder:
                     registers_read=ri.registers_read,
                     registers_written=ri.registers_written,
                 )
+                if addr in meta.literals:
+                    lit_addr, lit_data = meta.literals[addr]
+                    cfg.instructions[hex_addr(addr)].annotations.append(LiteralLoadAnnotation(
+                        added_by='cfg_builder', address=hex_addr(lit_addr), data=lit_data.hex(),
+                    ))
 
             last_ri = raw_insns[insn_addrs[-1]]
             successors = _compute_successors(
-                last_ri, raw_insns, block_starts,
-                meta.plt_symbols, meta.func_symbols, arch_m,
-                jump_tables=meta.jump_tables,
+                last_ri, raw_insns, arch_m, jump_tables=meta.jump_tables,
+                noreturn=noreturn,
             )
             # Anotar instrucciones que son sitios de tabla de salto (Fase 1)
             if meta.jump_tables and last_ri.address in meta.jump_tables:
@@ -224,7 +282,8 @@ class CFGBuilder:
                         cfg.basic_blocks[succ_addr].predecessors.append(block_addr)
 
         # 7. Construir aristas
-        cfg.edges = _build_edges(raw_insns, cfg.basic_blocks, cfg.functions, arch_m)
+        cfg.edges = _build_edges(raw_insns, cfg.basic_blocks, cfg.functions, arch_m,
+                                 jump_tables=meta.jump_tables, noreturn=noreturn)
 
         # 8. Rellenar calls_to / called_from entre funciones
         _fill_call_relations(cfg, raw_insns, arch_m)
@@ -240,6 +299,26 @@ class CFGBuilder:
 # ---------------------------------------------------------------------------
 # Algoritmo de construcción de bloques
 # ---------------------------------------------------------------------------
+
+# Funciones de biblioteca que nunca retornan (como las que Ghidra marca noreturn)
+NORETURN_NAMES = frozenset({
+    'abort', 'exit', '_exit', '_Exit', 'quick_exit', 'pthread_exit', 'thrd_exit',
+    '__assert_func', '__assert_fail', '__assert_rtn', '__assert', '__stack_chk_fail',
+    '__chk_fail', '__fortify_fail', '__libc_start_main', 'longjmp', 'siglongjmp',
+    '_longjmp', '__longjmp_chk', 'err', 'errx', 'verr', 'verrx', 'panic',
+    '__cxa_throw', '__cxa_rethrow', '__cxa_bad_cast', '__cxa_bad_typeid',
+    '__cxa_call_unexpected', '_Unwind_Resume', '__ubsan_handle_builtin_unreachable',
+    '_ZSt9terminatev', '_ZSt10unexpectedv',
+})
+
+
+def is_noreturn_name(name: str) -> bool:
+    """Nombre (sin versión @GLIBC) de una función que nunca retorna."""
+    base = name.split('@')[0]
+    if base.startswith('__wrap_') or base.startswith('__real_'):
+        base = base[7:]
+    return base in NORETURN_NAMES or base.startswith('_ZSt') and '__throw_' in base
+
 
 # Mnemonics x86-64 por defecto (usados cuando no se pasa arch_mnemonics)
 _X86_MNEMONICS = ArchMnemonics(
@@ -257,11 +336,7 @@ _X86_MNEMONICS = ArchMnemonics(
 
 
 def _is_terminator(ri: RawInstruction, arch_m: ArchMnemonics) -> bool:
-    return ri.mnemonic in arch_m.all_terminators
-
-
-def _is_conditional_branch(m: str, arch_m: ArchMnemonics) -> bool:
-    return m in arch_m.cond_branches
+    return arch_m.flow(ri) is not None
 
 
 def _resolve_direct_addr(operands: str) -> int | None:
@@ -276,42 +351,60 @@ def _resolve_direct_addr(operands: str) -> int | None:
     return None
 
 
+def _direct_target(ri: RawInstruction, flow: Flow, arch_m: ArchMnemonics) -> int | None:
+    """Target estático de un salto/llamada directo; None si es indirecto."""
+    if flow.kind not in ('branch', 'call'):
+        return None
+    return arch_m.resolve_target(ri.mnemonic, ri.operands)
+
+
+def _jump_targets(ri: RawInstruction, flow: Flow,
+                  raw_insns: dict[int, RawInstruction],
+                  arch_m: ArchMnemonics,
+                  jump_tables: dict | None) -> list[int]:
+    """Destinos intra-código de un salto: directo o tabla de salto resuelta."""
+    target = _direct_target(ri, flow, arch_m)
+    if target and target in raw_insns:
+        return [target]
+    # Tabla de salto resuelta por el disassembler (Fase 1)
+    if jump_tables and ri.address in jump_tables:
+        return [t for t in jump_tables[ri.address] if t in raw_insns]
+    return []  # Salto indirecto no resuelto
+
+
 def _identify_block_starts(raw_insns: dict[int, RawInstruction],
                             func_starts: set[int],
                             arch_m: ArchMnemonics,
-                            jump_tables: dict | None = None) -> set[int]:
+                            jump_tables: dict | None = None,
+                            plt_addrs: set[int] | None = None,
+                            noreturn: set[int] | None = None) -> set[int]:
     """Identifica todas las direcciones que inician un bloque básico."""
     starts = set(func_starts)
+    plt_addrs = plt_addrs or set()
+    noreturn = noreturn or set()
 
-    for addr, ri in sorted(raw_insns.items()):
-        if ri.mnemonic in arch_m.calls:
-            ret_addr = addr + ri.size
-            if ret_addr in raw_insns:
-                starts.add(ret_addr)
+    for addr, ri in raw_insns.items():
+        flow = arch_m.flow(ri)
+        if flow is None:
+            continue
+        fall = addr + ri.size
 
-        elif ri.mnemonic in arch_m.uncond_jumps:
-            target = arch_m.resolve_target(ri.mnemonic, ri.operands)
-            if target and target in raw_insns:
+        if flow.kind == 'call':
+            # El destino de una llamada directa es la entrada de una función;
+            # si no tiene símbolo, al menos debe empezar un bloque.
+            target = _direct_target(ri, flow, arch_m)
+            if target and target in raw_insns and target not in plt_addrs:
                 starts.add(target)
-            # Targets de tabla de salto (switch-case, Fase 1)
-            if jump_tables and addr in jump_tables:
-                for t in jump_tables[addr]:
-                    if t in raw_insns:
-                        starts.add(t)
-            fall = addr + ri.size
+            if fall in raw_insns and (flow.conditional or target not in noreturn):
+                starts.add(fall)
+
+        elif flow.kind in ('branch', 'indirect_jump'):
+            for t in _jump_targets(ri, flow, raw_insns, arch_m, jump_tables):
+                starts.add(t)
             if fall in raw_insns:
                 starts.add(fall)
 
-        elif _is_conditional_branch(ri.mnemonic, arch_m):
-            target = arch_m.resolve_target(ri.mnemonic, ri.operands)
-            if target and target in raw_insns:
-                starts.add(target)
-            fall = addr + ri.size
-            if fall in raw_insns:
-                starts.add(fall)
-
-        elif ri.mnemonic in arch_m.returns or ri.mnemonic in arch_m.syscalls:
-            fall = addr + ri.size
+        elif flow.kind in ('return', 'syscall') or flow.conditional:
             if fall in raw_insns:
                 starts.add(fall)
 
@@ -375,94 +468,136 @@ def _assign_blocks_to_functions(raw_blocks: dict[int, list[int]],
 
 
 def _compute_successors(ri: RawInstruction, raw_insns: dict[int, RawInstruction],
-                         block_starts: set[int],
-                         plt_symbols: dict[int, str],
-                         func_symbols: dict[int, str],
                          arch_m: ArchMnemonics,
-                         jump_tables: dict | None = None) -> list[int]:
-    """Calcula los sucesores de un bloque a partir de su última instrucción."""
-    m    = ri.mnemonic
-    addr = ri.address
+                         jump_tables: dict | None = None,
+                         noreturn: set[int] | None = None) -> list[int]:
+    """
+    Calcula los sucesores intra-procedurales de un bloque a partir de su última
+    instrucción. Las llamadas continúan en la dirección de retorno; el destino
+    de la llamada solo aparece en la lista de aristas (tipo 'call').
+    """
+    fall = ri.address + ri.size
+    has_fall = fall in raw_insns
+    flow = arch_m.flow(ri)
 
-    if m in arch_m.returns:
-        return []
-    if m in arch_m.syscalls:
-        fall = addr + ri.size
-        return [fall] if fall in raw_insns else []
-    if m in arch_m.halts:
-        return []
-    if m in arch_m.calls:
-        fall = addr + ri.size
-        return [fall] if fall in raw_insns else []
-    if m in arch_m.uncond_jumps:
-        target = arch_m.resolve_target(m, ri.operands)
-        if target and target in raw_insns:
-            return [target]
-        # Tabla de salto resuelta por el disassembler (Fase 1)
-        if jump_tables and ri.address in jump_tables:
-            return [t for t in jump_tables[ri.address] if t in raw_insns]
-        return []  # Salto indirecto no resuelto
-    if _is_conditional_branch(m, arch_m):
-        target = arch_m.resolve_target(m, ri.operands)
-        fall   = addr + ri.size
-        succs  = []
-        if target and target in raw_insns:
-            succs.append(target)
-        if fall in raw_insns:
-            succs.append(fall)
-        return succs
-    # Fall-through normal
-    fall = addr + ri.size
-    return [fall] if fall in raw_insns else []
+    if flow is not None and flow.kind == 'call' and not flow.conditional \
+            and noreturn and _direct_target(ri, flow, arch_m) in noreturn:
+        return []           # llamada a una función que no retorna
+    if flow is None or flow.kind in ('call', 'syscall'):
+        return [fall] if has_fall else []
+    if flow.kind in ('return', 'halt'):
+        return [fall] if flow.conditional and has_fall else []
+
+    succs = _jump_targets(ri, flow, raw_insns, arch_m, jump_tables)
+    if flow.conditional and has_fall:
+        succs.append(fall)
+    return succs
 
 
 def _build_edges(raw_insns: dict[int, RawInstruction],
                  basic_blocks: dict,
                  functions: dict,
-                 arch_m: ArchMnemonics) -> list[Edge]:
-    """Construye la lista de aristas del CFG."""
+                 arch_m: ArchMnemonics,
+                 jump_tables: dict | None = None,
+                 noreturn: set[int] | None = None) -> list[Edge]:
+    """
+    Construye la lista de aristas del CFG.
+
+    Todas las aristas llevan source_block y condition explícitos. Cuando el
+    destino no se conoce estáticamente (salto o llamada indirecta sin resolver)
+    la arista apunta a UNKNOWN_TARGET en lugar de omitirse.
+
+    condition:
+      'always'      la arista se toma siempre que se ejecuta la instrucción
+      '<mnem>'      salto condicional tomado (p.ej. 'beq', 'jne', 'cbz')
+      'not <mnem>'  rama no tomada de un condicional (fall-through)
+      'case N,M'    entradas N, M de una tabla de salto resuelta
+
+    Un salto directo a la entrada de otra función es un 'tail_call'. Tras una
+    llamada a una función que no retorna no hay arista fall_through.
+    """
     edges: list[Edge] = []
     seen: set[tuple] = set()
+    noreturn = noreturn or set()
 
-    for _block_addr, block in basic_blocks.items():
+    def add(source: str, block_addr: str, target: str, edge_type: str, condition: str):
+        key = (source, target, edge_type)
+        if key in seen:
+            return
+        seen.add(key)
+        edges.append(Edge(source=source, target=target, type=edge_type,
+                          condition=condition, source_block=block_addr))
+
+    def code_target(addr: int) -> str | None:
+        h = hex_addr(addr)
+        return h if h in basic_blocks or h in functions else None
+
+    for block_addr, block in basic_blocks.items():
         if not block.instructions:
             continue
-        last_insn_addr = block.instructions[-1]
-        last_insn = raw_insns.get(int(last_insn_addr, 16))
-        if last_insn is None:
+        src = block.instructions[-1]
+        ri = raw_insns.get(int(src, 16))
+        if ri is None:
             continue
 
-        m = last_insn.mnemonic
+        m = ri.mnemonic
+        flow = arch_m.flow(ri)
+        fall = hex_addr(ri.address + ri.size)
+        has_fall = fall in basic_blocks
+        taken = m if flow is not None and flow.conditional else 'always'
 
-        for succ_addr in block.successors:
-            key = (last_insn_addr, succ_addr)
-            if key in seen:
-                continue
-            seen.add(key)
+        if flow is None:
+            for succ in block.successors:
+                add(src, block_addr, succ, 'fall_through', 'always')
+            continue
 
-            if m in arch_m.returns:
-                edge_type = 'return'
-            elif m in arch_m.syscalls:
-                edge_type = 'syscall'
-            elif m in arch_m.calls:
-                edge_type = 'call'
-            elif m in arch_m.uncond_jumps:
-                edge_type = 'unconditional_jump'
-            elif _is_conditional_branch(m, arch_m):
-                edge_type = 'conditional_jump'
+        if flow.kind in ('return', 'halt'):
+            # El destino de un retorno es el llamador: no se modela como arista.
+            if flow.conditional and has_fall:
+                add(src, block_addr, fall, 'fall_through', f'not {m}')
+            continue
+
+        if flow.kind == 'syscall':
+            if has_fall:
+                add(src, block_addr, fall, 'syscall', 'always')
+            continue
+
+        if flow.kind == 'call':
+            target = _direct_target(ri, flow, arch_m)
+            callee = code_target(target) if target else None
+            if callee is not None:
+                add(src, block_addr, callee, 'call', taken)
             else:
-                edge_type = 'fall_through'
+                add(src, block_addr, UNKNOWN_TARGET, 'call_indirect', taken)
+            if has_fall and (flow.conditional or target not in noreturn):
+                add(src, block_addr, fall, 'fall_through', 'always')
+            continue
 
-            condition = None
-            if edge_type == 'conditional_jump':
-                condition = m  # e.g. 'je', 'jne', etc.
-
-            edges.append(Edge(
-                source=last_insn_addr,
-                target=succ_addr,
-                type=edge_type,
-                condition=condition,
-            ))
+        # branch / indirect_jump
+        target = _direct_target(ri, flow, arch_m)
+        table = jump_tables.get(ri.address) if jump_tables else None
+        if target and target in raw_insns:
+            dst = hex_addr(target)
+            if dst in functions and dst != block.function:
+                edge_type = 'tail_call'
+            else:
+                edge_type = 'conditional_jump' if flow.conditional else 'unconditional_jump'
+            add(src, block_addr, dst, edge_type, taken)
+        elif target and code_target(target):
+            # Salto directo a una función sin código en el CFG (p.ej. PLT)
+            add(src, block_addr, code_target(target), 'tail_call', taken)
+        elif table:
+            cases: dict[int, list[int]] = {}
+            for idx, t in enumerate(table):
+                if t in raw_insns:
+                    cases.setdefault(t, []).append(idx)
+            for t, idxs in cases.items():
+                add(src, block_addr, hex_addr(t), 'indirect_jump',
+                    'case ' + ','.join(str(i) for i in idxs))
+        else:
+            add(src, block_addr, UNKNOWN_TARGET, 'indirect_jump', taken)
+        if flow.conditional and has_fall:
+            add(src, block_addr, fall, 'fall_through', f'not {m}')
 
     return edges
 
@@ -476,10 +611,13 @@ def _fill_call_relations(cfg: EnrichedCFG, raw_insns: dict[int, RawInstruction],
         last_addr_str = block.instructions[-1]
         # Lookup directo O(1): raw_insns usa int keys, last_addr_str es hex string
         last_insn = raw_insns.get(int(last_addr_str, 16))
-        if last_insn is None or last_insn.mnemonic not in arch_m.calls:
+        if last_insn is None:
+            continue
+        flow = arch_m.flow(last_insn)
+        if flow is None or flow.kind != 'call':
             continue
 
-        target_int = arch_m.resolve_target(last_insn.mnemonic, last_insn.operands)
+        target_int = _direct_target(last_insn, flow, arch_m)
         if target_int is None:
             continue
 

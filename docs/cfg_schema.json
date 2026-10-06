@@ -89,7 +89,11 @@
         "architecture": {
           "type": "string",
           "enum": [
-            "amd64"
+            "amd64",
+            "i386",
+            "arm64",
+            "arm32",
+            "cortexm"
           ]
         },
         "bits": {
@@ -232,6 +236,10 @@
           "items": {
             "$ref": "#/definitions/annotation"
           }
+        },
+        "is_noreturn": {
+          "type": "boolean",
+          "description": "La función nunca retorna: no hay arista fall_through tras las llamadas a ella."
         }
       },
       "additionalProperties": false
@@ -405,10 +413,23 @@
       ],
       "properties": {
         "source": {
-          "$ref": "#/definitions/hex_address"
+          "$ref": "#/definitions/hex_address",
+          "description": "Dirección de la última instrucción del bloque origen."
+        },
+        "source_block": {
+          "$ref": "#/definitions/hex_address",
+          "description": "Bloque básico al que pertenece source. Usar este campo (no source) como nodo origen al construir un grafo bloque→bloque."
         },
         "target": {
-          "$ref": "#/definitions/hex_address"
+          "description": "Bloque o función destino; 'unknown' si el destino no se conoce estáticamente (salto o llamada indirecta sin resolver).",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/hex_address"
+            },
+            {
+              "const": "unknown"
+            }
+          ]
         },
         "type": {
           "type": "string",
@@ -418,12 +439,14 @@
             "conditional_jump",
             "call",
             "call_indirect",
+            "tail_call",
             "return",
             "indirect_jump",
             "syscall"
           ]
         },
         "condition": {
+          "description": "'always' si la arista se toma siempre; el mnemónico (p.ej. 'beq') para un salto condicional tomado; 'not <mnemónico>' para la rama no tomada; 'case N,M' para entradas de una tabla de salto.",
           "type": [
             "string",
             "null"
@@ -481,6 +504,15 @@
         },
         {
           "$ref": "#/definitions/annotation_trace_point"
+        },
+        {
+          "$ref": "#/definitions/annotation_jump_table"
+        },
+        {
+          "$ref": "#/definitions/annotation_resolved_indirect"
+        },
+        {
+          "$ref": "#/definitions/annotation_literal_load"
         }
       ]
     },
@@ -574,7 +606,12 @@
             "syscall_site",
             "loop_header",
             "return_block",
-            "unreachable"
+            "unreachable",
+            "jump_table_site",
+            "indirect_call_site",
+            "irq_handler",
+            "memory_barrier",
+            "sleep_site"
           ]
         },
         "description": {
@@ -635,6 +672,85 @@
             "loop_backedge",
             "user_request"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotation_jump_table": {
+      "type": "object",
+      "description": "Tabla de salto (switch) resuelta estáticamente; targets[i] es el destino del índice i.",
+      "required": [
+        "type",
+        "added_by",
+        "targets"
+      ],
+      "properties": {
+        "type": {
+          "const": "jump_table"
+        },
+        "added_by": {
+          "type": "string"
+        },
+        "index_register": {
+          "type": "string"
+        },
+        "base_address": {
+          "type": "integer"
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/hex_address"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotation_resolved_indirect": {
+      "type": "object",
+      "required": [
+        "type",
+        "added_by",
+        "resolved_target"
+      ],
+      "properties": {
+        "type": {
+          "const": "resolved_indirect"
+        },
+        "added_by": {
+          "type": "string"
+        },
+        "resolved_target": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotation_literal_load": {
+      "type": "object",
+      "description": "Carga relativa a pc (literal pool): dirección del literal y bytes leídos (little-endian). El translator la emite como constante.",
+      "required": [
+        "type",
+        "added_by",
+        "address",
+        "data"
+      ],
+      "properties": {
+        "type": {
+          "const": "literal_load"
+        },
+        "added_by": {
+          "type": "string"
+        },
+        "address": {
+          "$ref": "#/definitions/hex_address"
+        },
+        "data": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{2})+$"
         }
       },
       "additionalProperties": false

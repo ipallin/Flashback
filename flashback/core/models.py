@@ -32,9 +32,13 @@ TracePointReason = Literal[
 ]
 EdgeType = Literal[
     'fall_through', 'unconditional_jump', 'conditional_jump',
-    'call', 'call_indirect', 'return', 'indirect_jump', 'syscall'
+    'call', 'call_indirect', 'tail_call', 'return', 'indirect_jump', 'syscall'
 ]
 PipelineStage = Literal['initial', 'enriched']
+
+# Destino de una arista cuyo target no se conoce estáticamente
+# (salto o llamada indirecta sin resolver).
+UNKNOWN_TARGET = 'unknown'
 
 
 def hex_addr(value: int | str) -> HexAddr:
@@ -140,6 +144,18 @@ class JumpTableAnnotation(Annotation):
 
 
 @dataclass
+class LiteralLoadAnnotation(Annotation):
+    """Carga relativa a pc (literal pool): dirección y bytes leídos (little-endian)."""
+    address: str = ''
+    data: str = ''
+
+    def __init__(self, added_by: str, address: str = '', data: str = '', **_):
+        super().__init__(type='literal_load', added_by=added_by)
+        self.address = address
+        self.data = data
+
+
+@dataclass
 class ResolvedIndirectAnnotation(Annotation):
     """Llamada o salto indirecto resuelto por backward slice local (Fase 2)."""
     resolved_target: str = ''
@@ -160,6 +176,7 @@ ANNOTATION_REGISTRY: dict[str, type[Annotation]] = {
     'trace_point': TracePointAnnotation,
     'jump_table': JumpTableAnnotation,
     'resolved_indirect': ResolvedIndirectAnnotation,
+    'literal_load': LiteralLoadAnnotation,
 }
 
 
@@ -201,6 +218,7 @@ class Function:
     called_from: list[HexAddr] = field(default_factory=list)
     calls_to: list[HexAddr] = field(default_factory=list)
     annotations: list[Annotation] = field(default_factory=list)
+    is_noreturn: bool = False       # la función nunca retorna (abort, exit, panic...)
 
 
 @dataclass
@@ -230,11 +248,12 @@ class Instruction:
 
 @dataclass
 class Edge:
-    source: HexAddr
-    target: HexAddr
+    source: HexAddr                 # última instrucción del bloque origen
+    target: HexAddr                 # bloque/función destino, o UNKNOWN_TARGET
     type: EdgeType
     condition: Optional[str] = None
     annotations: list[Annotation] = field(default_factory=list)
+    source_block: Optional[HexAddr] = None  # bloque al que pertenece source
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +405,13 @@ class EnrichedCFG:
         for i, edge in enumerate(self.edges):
             if edge.source not in self.instructions:
                 errors.append(f'I4: arista #{i} tiene source inexistente {edge.source}')
-            if edge.target not in self.basic_blocks and edge.target not in self.functions:
+            elif (edge.source_block is not None
+                    and self.instructions[edge.source].block != edge.source_block):
+                errors.append(f'I4: arista #{i} tiene source_block {edge.source_block} '
+                              f'distinto del bloque de {edge.source}')
+            if (edge.target != UNKNOWN_TARGET
+                    and edge.target not in self.basic_blocks
+                    and edge.target not in self.functions):
                 errors.append(f'I4: arista #{i} tiene target inexistente {edge.target}')
             if edge.type == 'conditional_jump' and edge.condition is None:
                 errors.append(f'I4: arista condicional #{i} no tiene condition')
@@ -429,6 +454,7 @@ def _function_from_dict(data: dict) -> Function:
         called_from=data.get('called_from', []),
         calls_to=data.get('calls_to', []),
         annotations=anns,
+        is_noreturn=data.get('is_noreturn', False),
     )
 
 
@@ -461,7 +487,7 @@ def _edge_from_dict(data: dict) -> Edge:
     return Edge(
         source=data['source'], target=data['target'],
         type=data['type'], condition=data.get('condition'),
-        annotations=anns,
+        annotations=anns, source_block=data.get('source_block'),
     )
 
 

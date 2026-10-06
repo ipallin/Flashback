@@ -559,6 +559,15 @@ class Translator:
             return True
         return m in _JCC_TO_C
 
+    # Si True, __jt_index se captura justo antes del salto de tabla cuando no se
+    # capturó antes (ARM: tbb [pc, rI] y ldr pc, [rB, rI, lsl #2] leen el índice
+    # en la propia instrucción de despacho).
+    _jt_capture_at_dispatch = False
+
+    def _jt_index_expr(self, reg: str) -> str:
+        """Expresión C del registro índice de una tabla de salto."""
+        return reg
+
     def _emit_block(self, block: BasicBlock, cfg: EnrichedCFG) -> str:
         block_id = block.address.replace('0x', '')
         lines = [f'  block_{block_id}:']
@@ -579,10 +588,17 @@ class Translator:
             insn = cfg.instructions.get(insn_addr)
             if not insn:
                 continue
+            if (i == last_idx and jt_index_reg and not captured
+                    and self._jt_capture_at_dispatch):
+                lines.append(f'    __jt_index = {self._jt_index_expr(jt_index_reg)};'
+                             f'  /* índice de tabla de salto capturado */')
+                captured = True
             # La última instrucción del bloque, si es un salto (jmp/jcc), no se
             # traduce inline: su efecto lo materializa _emit_block_exit como
             # goto/if-goto. Se conserva el comentario de trazabilidad estática.
             if i == last_idx and self._is_branch_terminator(insn.mnemonic):
+                if any(a.type == 'trace_point' for a in insn.annotations):
+                    lines.append(f'    __trace({insn.address}ULL);')
                 lines.append(f'    /* {insn.address}: {insn.mnemonic} '
                              f'{insn.operands} */  /* salto → ver salida de bloque */')
                 continue
@@ -943,26 +959,25 @@ class Translator:
         )
 
     def _emit_block_exit(self, block: BasicBlock, cfg: EnrichedCFG) -> str:
-        if not block.successors:
-            return ''
-        if len(block.successors) == 1:
-            succ = block.successors[0]
-            if succ in cfg.basic_blocks:
-                return f'  goto block_{succ.replace("0x", "")};'
-            return ''
-        if len(block.successors) == 2:
-            t  = block.successors[0].replace('0x', '')
-            f_ = block.successors[1].replace('0x', '')
-            condition = self._jcc_condition(block, cfg)
-            return f'  if ({condition}) goto block_{t};\n  goto block_{f_};'
-
-        # Tres o más sucesores: buscar JumpTableAnnotation en la última instrucción
+        # Salto indexado resuelto: switch, sea cual sea el número de destinos
         if block.instructions:
             last_insn = cfg.instructions.get(block.instructions[-1])
             if last_insn is not None:
                 for ann in last_insn.annotations:
                     if ann.type == 'jump_table':
-                        return self._emit_jump_table_switch(ann, block)  # type: ignore[arg-type]
+                        return self._emit_jump_table_switch(ann, block, cfg)  # type: ignore[arg-type]
+        if not block.successors:
+            return ''
+        if len(block.successors) == 1:
+            succ = block.successors[0]
+            if succ in cfg.basic_blocks:
+                return f'  {self._jump_to(succ, block, cfg)}'
+            return ''
+        if len(block.successors) == 2:
+            t, f_ = block.successors
+            condition = self._jcc_condition(block, cfg)
+            return (f'  if ({condition}) {self._jump_to(t, block, cfg)}\n'
+                    f'  {self._jump_to(f_, block, cfg)}')
 
         return (
             '  /* UNSUPPORTED: salto indirecto sin resolver */\n'
@@ -970,7 +985,24 @@ class Translator:
             '  abort();'
         )
 
-    def _emit_jump_table_switch(self, jt_ann, block: BasicBlock) -> str:
+    def _jump_to(self, succ: str, block: BasicBlock, cfg: EnrichedCFG) -> str:
+        """
+        Sentencia C que transfiere el control de block a succ.
+
+        Un goto no puede salir de la función C: un salto a la entrada de otra
+        función (tail call, p.ej. 'jmp f' o 'b.w f') se traduce como llamada
+        seguida de return.
+        """
+        target = cfg.basic_blocks.get(succ)
+        succ_id = succ.replace('0x', '')
+        if target is None or target.function == block.function:
+            return f'goto block_{succ_id};'
+        if succ in self._defined_funcs:
+            return f'{{ func_{succ_id}(); return; }}  /* tail call */'
+        return (f'{{ fprintf(stderr, "salto a otra función: {succ}\\n"); abort(); }}')
+
+    def _emit_jump_table_switch(self, jt_ann, block: BasicBlock,
+                                cfg: EnrichedCFG | None = None) -> str:
         """
         Emite un switch C para un salto indexado resuelto (Fase 1).
 
@@ -981,8 +1013,10 @@ class Translator:
         """
         cases: list[str] = []
         for i, target in enumerate(jt_ann.targets):
-            blk_id = target.replace('0x', '')
-            cases.append(f'    case {i}: goto block_{blk_id};')
+            if cfg is not None:
+                cases.append(f'    case {i}: {self._jump_to(target, block, cfg)}')
+            else:
+                cases.append(f'    case {i}: goto block_{target.replace("0x", "")};')
         cases_str = '\n'.join(cases)
         return (
             f'  switch ((int)__jt_index) {{\n'

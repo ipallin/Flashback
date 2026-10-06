@@ -7,7 +7,7 @@ Diferencias respecto a Arm32Translator:
   - MRS/MSR mapeados a accesos a variables de registros especiales.
   - cpsid/cpsie mapeados a PRIMASK.
   - dmb/dsb/isb/wfi/wfe/sev son no-ops en la simulación.
-  - cbz/cbnz tratados como if (!r0) goto / if (r0) goto.
+  - cbz/cbnz terminan bloque: la salida de bloque emite if (r0 == 0) goto.
   - Sin emit_syscall ni emit_external_call (bare-metal sin OS).
   - Modelo de memoria: Flash en 0x08xxxxxx, SRAM en 0x20xxxxxx/0x30xxxxxx.
 """
@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 
+from flashback.arch.arm32 import semantics
+from flashback.arch.arm32.instruction_sem import ARM32_COND_TO_C, split_arm_mnemonic
 from flashback.arch.arm32.translator import Arm32Translator, _ARM32_REGS, _ARM32_ALIASES
 from flashback.core.models import EnrichedCFG
 
@@ -32,8 +34,13 @@ _SPECIAL_REG_ALIASES = {
     'xpsr': 'xpsr', 'apsr': 'apsr', 'ipsr': 'ipsr', 'epsr': 'epsr',
     'msp': 'msp', 'psp': 'psp',
     'control': 'control', 'primask': 'primask', 'basepri': 'basepri',
-    'faultmask': 'faultmask',
+    'faultmask': 'faultmask', 'basepri_max': 'basepri',
 }
+
+# Vistas de xPSR que contienen los flags NZCV (bits 31..28)
+_APSR_NAMES = frozenset({'apsr', 'xpsr', 'iapsr', 'eapsr', 'apsr_nzcvq', 'apsr_nzcv', 'apsr_g',
+                         'apsr_nzcvqg'})
+_IPSR_NAMES = frozenset({'xpsr', 'iapsr'})
 
 
 class CortexMTranslator(Arm32Translator):
@@ -50,6 +57,7 @@ class CortexMTranslator(Arm32Translator):
         lines.append('/* Aliases convenientes */')
         for alias, target in _ARM32_ALIASES.items():
             lines.append(f'#define {alias} {target}')
+        lines.append('static uint64_t __jt_index = 0;  /* índice de tabla de salto */')
         lines.append('/* Registros especiales Cortex-M */')
         for sreg in _CORTEXM_SPECIAL_REGS:
             lines.append(f'static uint32_t {sreg} = 0;')
@@ -113,78 +121,68 @@ class CortexMTranslator(Arm32Translator):
     # Traducción de instrucciones Cortex-M específicas
     # ------------------------------------------------------------------
 
+    def translate(self, cfg: EnrichedCFG) -> str:
+        # Handler de la excepción SVCall (svc #n), si el firmware lo define
+        self._svc_handler = next(
+            (addr for addr, f in cfg.functions.items()
+             if f.name in ('SVC_Handler', 'SVCall_Handler', 'vPortSVCHandler')
+             and not f.is_external), None)
+        return super().translate(cfg)
+
+    def _is_thumb(self, insn) -> bool:
+        return True                     # Cortex-M solo ejecuta Thumb-2
+
+    def _svc(self, insn) -> str:
+        handler = getattr(self, '_svc_handler', None)
+        if handler:
+            return f'func_{handler.replace("0x", "")}();  /* svc {insn.operands}: excepción SVCall */'
+        return f'/* svc {insn.operands}: el firmware no define SVC_Handler */'
+
     def _translate_instruction(self, insn) -> str | None:
         m = insn.mnemonic.lower()
         ops = insn.operands.strip()
+        base, cond = split_arm_mnemonic(m)
+        stmt = None
 
-        # MRS: mover de registro especial a registro general
-        if m == 'mrs':
+        # MRS / MSR: registros especiales; APSR/xPSR se corresponden con los flags NZCV
+        if base == 'mrs':
             parts = [p.strip() for p in ops.split(',', 1)]
             if len(parts) == 2:
-                dst  = _a32_reg_to_c(parts[0])
-                sreg = _SPECIAL_REG_ALIASES.get(parts[1].lower(), parts[1].lower())
-                return f'{dst} = {sreg};'
-
-        # MSR: mover de registro general a registro especial
-        if m == 'msr':
+                dst = _a32_reg_to_c(parts[0])
+                src = parts[1].lower()
+                if src in _APSR_NAMES:
+                    stmt = f'{dst} = {semantics.APSR_PACK}{" | ipsr" if src in _IPSR_NAMES else ""};'
+                elif src == 'msp':      # SP activo = MSP si CONTROL.SPSEL == 0
+                    stmt = f'{dst} = (control & 2U) ? msp : r13;'
+                elif src == 'psp':
+                    stmt = f'{dst} = (control & 2U) ? r13 : psp;'
+                else:
+                    sreg = _SPECIAL_REG_ALIASES.get(src, src)
+                    stmt = f'{dst} = {sreg};'
+        elif base == 'msr':
             parts = [p.strip() for p in ops.split(',', 1)]
             if len(parts) == 2:
-                sreg = _SPECIAL_REG_ALIASES.get(parts[0].lower(), parts[0].lower())
-                src  = _a32_reg_to_c(parts[1])
-                return f'{sreg} = {src};'
+                dst = parts[0].lower()
+                src = _a32_reg_to_c(parts[1])
+                if dst.startswith(('apsr', 'xpsr')):
+                    stmt = semantics.apsr_unpack(src)
+                elif dst == 'msp':
+                    stmt = f'msp = {src}; if (!(control & 2U)) r13 = msp;'
+                elif dst == 'psp':
+                    stmt = f'psp = {src}; if (control & 2U) r13 = psp;'
+                else:
+                    sreg = _SPECIAL_REG_ALIASES.get(dst, dst)
+                    stmt = f'{sreg} = {src};'
 
         # CPSID / CPSIE — enable/disable interrupts
-        if m == 'cpsid':
-            flag = ops.lower()
-            if flag == 'i':
-                return 'primask = 1;  /* CPSID i — disable IRQ */'
-            if flag == 'f':
-                return 'faultmask = 1;  /* CPSID f — disable faults */'
-            return f'primask = 1;  /* CPSID {ops} */'
-        if m == 'cpsie':
-            flag = ops.lower()
-            if flag == 'i':
-                return 'primask = 0;  /* CPSIE i — enable IRQ */'
-            if flag == 'f':
-                return 'faultmask = 0;  /* CPSIE f — enable faults */'
-            return f'primask = 0;  /* CPSIE {ops} */'
+        elif base in ('cpsid', 'cpsie'):
+            value = 1 if base == 'cpsid' else 0
+            reg = 'faultmask' if ops.lower() == 'f' else 'primask'
+            stmt = f'{reg} = {value};  /* {m} {ops} */'
 
-        # Barreras de memoria y espera — no-ops en simulación
-        if m in ('dmb', 'dsb', 'isb'):
-            return f'/* {m} — memory barrier (nop en simulación) */'
-        if m in ('wfi', 'wfe'):
-            return f'/* {m} — wait for interrupt/event (nop en simulación) */'
-        if m == 'sev':
-            return '/* sev — send event (nop en simulación) */'
-        if m == 'nop':
-            return '/* nop */'
-
-        # cbz / cbnz — Compare and Branch if Zero / Non-Zero
-        if m in ('cbz', 'cbnz'):
-            parts = [p.strip() for p in ops.split(',', 1)]
-            if len(parts) == 2:
-                reg  = _a32_reg_to_c(parts[0])
-                dest = parts[1].strip()
-                cond = f'!{reg}' if m == 'cbz' else reg
-                return f'if ({cond}) goto label_{dest.replace("0x", "").replace("#", "")};'
-
-        # BKPT — breakpoint
-        if m == 'bkpt':
-            return f'/* bkpt {ops} — breakpoint */'
-
-        # IT block — la instrucción IT en sí no genera código (capstone ya
-        # pone la condición en las instrucciones siguientes)
-        if m.startswith('it'):
-            return f'/* {m} {ops} — IT block (condición en instrucciones siguientes) */'
-
-        # VFP / FPU — operaciones de punto flotante (vldr/vstr/vadd/vmul/etc.)
-        if (m.startswith('v') and m not in ('vpush', 'vpop')
-                and m not in ('vldm', 'vstm')):
-            return f'/* {m} {ops}  [VFP/FPU — no simulado] */'
-        if m in ('vpush', 'vpop', 'vldm', 'vstm'):
-            return f'/* {m} {ops}  [VFP stack op — no simulada] */'
-
-        # Delegar el resto al traductor ARM32 base
+        if stmt is not None:
+            return f'if ({ARM32_COND_TO_C[cond]}) {{ {stmt} }}' if cond else stmt
+        # Resto de instrucciones (enteras, VFP, memoria...): semántica ARM común
         return super()._translate_instruction(insn)
 
 
@@ -195,5 +193,5 @@ class CortexMTranslator(Arm32Translator):
 def _a32_reg_to_c(reg: str) -> str:
     reg = reg.lower().strip()
     aliases = {'sp': 'r13', 'lr': 'r14', 'pc': 'r15',
-               'ip': 'r12', 'fp': 'r11', 'sl': 'r10'}
+               'ip': 'r12', 'fp': 'r11', 'sl': 'r10', 'sb': 'r9'}
     return aliases.get(reg, reg)

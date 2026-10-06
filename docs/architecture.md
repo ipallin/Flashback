@@ -83,7 +83,13 @@ Recibe `dict[int, RawInstruction]` + `BinaryMeta` y produce `EnrichedCFG`. Proce
 3. `_assign_blocks_to_functions()` — asigna cada bloque a la función más cercana por debajo (bisect, O(n log m))
 4. Construye objetos `Instruction` y `BasicBlock` en `EnrichedCFG`
 5. Rellena `predecessors` de cada bloque
-6. `_build_edges()` — construye `Edge` tipadas (fall_through, conditional_jump, etc.)
+6. `_build_edges()` — construye `Edge` tipadas (fall_through, conditional_jump, call, indirect_jump, etc.).
+   Cada arista lleva `source` (última instrucción del bloque origen), `source_block`
+   (bloque origen) y `condition` explícita (`always`, el mnemónico del salto, `not <mnemónico>`
+   o `case N`). Los destinos no resolubles estáticamente se marcan como `target: "unknown"`.
+   Para un grafo bloque→bloque, usar `source_block` → `target` descartando `unknown`.
+   Un salto directo a la entrada de otra función es un `tail_call`. Tras una llamada a una
+   función que no retorna (`Function.is_noreturn`) no hay arista `fall_through`.
 7. `_fill_call_relations()` — rellena `calls_to` / `called_from` entre funciones
 
 **`ArchMnemonics`** es el único parámetro que hace al CFGBuilder agnóstico de arquitectura:
@@ -176,7 +182,9 @@ Cada arquitectura implementa su propia estrategia de descubrimiento de PLT:
 | arm32 | Stride 20+12n bytes → pltgot_relocations ordenadas |
 | cortexm | Sin PLT (sin dynamic linker) |
 
-**Cortex-M específico:** usa `CS_MODE_THUMB | CS_MODE_MCLASS` (obligatorio para MRS/MSR a registros especiales como xPSR, MSP, PSP). Desensambla función a función para saltar los literal pools incrustados entre funciones en `.text`.
+**Cortex-M específico:** usa `CS_MODE_THUMB | CS_MODE_MCLASS` (obligatorio para MRS/MSR a registros especiales como xPSR, MSP, PSP). Tras un barrido lineal función a función, `ThumbCodeDiscovery` (`arch/cortexm/discovery.py`) conserva solo el código alcanzable desde las entradas de función, resuelve las tablas `tbb`/`tbh`/`ldr pc` y descarta los literal pools.
+
+**Semántica ARM (`arch/arm32/semantics.py`):** compartida por los translators ARM32 y Cortex-M. Traduce cada instrucción ARM/Thumb-2/VFP a C sobre el estado simulado (r0-r15, NZCV, banco VFP `__s[]`, FPSCR). Las cargas desde literal pools llegan resueltas en la anotación `literal_load`. Se valida frente a Unicorn con `tools/arm_difftest.py`.
 
 #### `enricher.py`
 
@@ -329,8 +337,9 @@ Herramientas como BAP (Binary Analysis Platform), angr o Ghidra implementan form
 | Backward slice solo dentro del mismo bloque básico (no inter-bloque) | x86_64 Fase 2 |
 | Sin recuperación de tipos (structs, clases, arrays) | Todas |
 | Sin análisis de dataflow inter-bloque | Todas |
-| Sin soporte SIMD/AVX/NEON/VFP (instrucciones comentadas) | x86_64, arm64, cortexm |
+| Sin soporte SIMD/AVX/NEON (las formas NEON no se traducen) | x86_64, arm64, arm32 |
 | Solo formato ELF (no PE, Mach-O) | Todas |
 | Heurísticas de function discovery basadas en símbolos | Todas (binarios stripped son parciales) |
-| Cortex-M: VFP/FPU comentado como `[VFP/FPU — no simulado]` | cortexm |
+| ARM: flag Q, excepciones de coma flotante acumuladas en FPSCR y modos FZ/DN no simulados | arm32, cortexm |
+| ARM: el C generado usa punteros de 32 bits; ejecutarlo requiere mapear la memoria del firmware (periféricos, flash) | arm32, cortexm |
 | arm32: código Thumb en binarios Linux userspace puede requerir `--arch arm32` explícito | arm32 |

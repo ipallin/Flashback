@@ -221,3 +221,5 @@ tests/corpus/binaries/*.elf
 # Ficheros sueltos de desarrollo
 test_recover.json
 tools/*
+*.elf
+out/

@@ -20,15 +20,25 @@ import lief
 from flashback.arch.arm32.disassembler import (
     Arm32Disassembler, DisassemblerError,
     _sha256, _is_stripped, _get_reg_access,
-    _ARM32_MNEMONICS,
 )
 from flashback.arch.arm32.instruction_sem import (
     COND_BRANCH_MNEMONICS, UNCOND_JUMP_MNEMONICS, CALL_MNEMONICS,
+    classify_arm_flow, literal_reference, resolve_arm_branch_target,
 )
+from flashback.arch.cortexm.discovery import ThumbCodeDiscovery
 from flashback.arch.cortexm.vector_table import parse_vector_table, is_vector_table_section
-from flashback.core.cfg_builder import BinaryMeta, RawInstruction, ArchMnemonics, CFGBuilder
+from flashback.core.cfg_builder import (
+    BinaryMeta, RawInstruction, ArchMnemonics, CFGBuilder, is_noreturn_name,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _classify_cortexm(mnemonic: str, operands: str):
+    # svc en bare-metal es una llamada al RTOS que continúa en la siguiente
+    # instrucción: no termina el bloque.
+    return classify_arm_flow(mnemonic, operands, syscalls=False)
+
 
 _CORTEXM_MNEMONICS = ArchMnemonics(
     cond_branches=COND_BRANCH_MNEMONICS | frozenset({'cbz', 'cbnz'}),
@@ -36,14 +46,11 @@ _CORTEXM_MNEMONICS = ArchMnemonics(
     calls=CALL_MNEMONICS,
     returns=frozenset({'bx'}),
     syscalls=frozenset(),       # sin syscalls de SO en bare-metal
-    halts=frozenset({'udf', 'bkpt', 'wfi', 'wfe'}),
-    target_resolver=_ARM32_MNEMONICS.target_resolver,
+    # wfi/wfe no detienen el núcleo: la ejecución sigue tras la interrupción
+    halts=frozenset({'udf', 'bkpt'}),
+    target_resolver=resolve_arm_branch_target,
+    classifier=_classify_cortexm,
 )
-
-_CORTEXM_RUNTIME = frozenset({
-    'Reset_Handler', 'SystemInit', '__libc_init_array',
-    'main', '_exit', '__assert_func',
-})
 
 
 class CortexMDisassembler(Arm32Disassembler):
@@ -80,7 +87,26 @@ class CortexMDisassembler(Arm32Disassembler):
         func_symbols = self._find_func_symbols(elf)
         # Guardar para que _disassemble pueda reiniciar en cada función
         self._func_addrs = set(func_symbols.keys())
-        all_insns    = self._disassemble(elf)
+        linear_insns = self._disassemble(elf)
+        # Quedarse solo con el código alcanzable: descarta literal pools y
+        # tablas de salto decodificados como instrucciones y resuelve tbb/tbh.
+        discovery = ThumbCodeDiscovery(
+            sections=self._code_sections,
+            linear=linear_insns,
+            decode_run=self._decode_run,
+            classify=_classify_cortexm,
+            resolve_target=resolve_arm_branch_target,
+            func_starts=self._func_addrs,
+        ).run(self._func_addrs, noreturn_seeds={
+            a for a, name in func_symbols.items() if is_noreturn_name(name)})
+        all_insns = discovery.instructions
+        logger.info(
+            f'Cortex-M: {len(linear_insns)} instrucciones en barrido lineal, '
+            f'{len(all_insns)} alcanzables; {len(discovery.jump_tables)} tablas de salto '
+            f'resueltas, {discovery.unresolved_indirect} saltos indirectos sin resolver, '
+            f'{discovery.data_bytes} bytes de datos en código, '
+            f'{len(discovery.noreturn)} funciones que no retornan'
+        )
         rodata_va, rodata_hex = self._extract_section_bytes(elf, '.rodata')
         data_va, data_hex     = self._extract_section_bytes(elf, '.data')
         bss_va, bss_size      = self._extract_bss(elf)
@@ -100,6 +126,10 @@ class CortexMDisassembler(Arm32Disassembler):
             data_hex=data_hex,
             bss_va=bss_va,
             bss_size=bss_size,
+            jump_tables=discovery.jump_tables,
+            jump_table_index_regs=discovery.jump_table_index_regs,
+            literals=self._literals(all_insns),
+            noreturn=discovery.noreturn,
         )
         logger.info(
             f'Cortex-M: {len(func_symbols)} funciones, '
@@ -160,12 +190,12 @@ class CortexMDisassembler(Arm32Disassembler):
         if entry:
             funcs[entry] = 'Reset_Handler'
 
-        # Símbolos ELF normales (todos tendrán Thumb bit)
+        # Símbolos ELF normales (todos tendrán Thumb bit). En firmware no hay
+        # runtime de C que excluir: main, _exit o SystemInit son funciones más.
         for sym in elf.symbols:
             if (sym.type == lief.ELF.Symbol.TYPE.FUNC
                     and sym.value != 0
-                    and sym.name
-                    and sym.name not in _CORTEXM_RUNTIME):
+                    and sym.name):
                 addr = sym.value & ~1
                 funcs[addr] = sym.name
 
@@ -192,14 +222,10 @@ class CortexMDisassembler(Arm32Disassembler):
         las direcciones de los símbolos de función para reiniciar la decodificación
         en cada punto de entrada conocido.
         """
-        cs = capstone.Cs(
-            capstone.CS_ARCH_ARM,
-            capstone.CS_MODE_THUMB | capstone.CS_MODE_MCLASS,
-        )
-        cs.detail = True
-
+        cs = self._capstone()
         func_addrs = getattr(self, '_func_addrs', set())
         all_insns: dict[int, RawInstruction] = {}
+        self._code_sections: list[tuple[int, bytes]] = []
 
         for section in elf.sections:
             if not section.has(lief.ELF.Section.FLAGS.EXECINSTR):
@@ -211,6 +237,7 @@ class CortexMDisassembler(Arm32Disassembler):
             data = bytes(section.content)
             base = section.virtual_address
             end  = base + len(data)
+            self._code_sections.append((base, data))
 
             # Puntos de inicio en esta sección: funciones conocidas + inicio de sección
             starts = sorted(
@@ -235,16 +262,7 @@ class CortexMDisassembler(Arm32Disassembler):
                     if cs_insn.address in decoded:
                         break
                     decoded.add(cs_insn.address)
-                    regs_read, regs_written = _get_reg_access(cs_insn)
-                    all_insns[cs_insn.address] = RawInstruction(
-                        address=cs_insn.address,
-                        mnemonic=cs_insn.mnemonic,
-                        operands=cs_insn.op_str,
-                        bytes_hex=cs_insn.bytes.hex(),
-                        size=cs_insn.size,
-                        registers_read=regs_read,
-                        registers_written=regs_written,
-                    )
+                    all_insns[cs_insn.address] = _raw(cs_insn)
 
             logger.debug(
                 f'Sección "{section.name}" @ 0x{base:08x}: '
@@ -253,3 +271,46 @@ class CortexMDisassembler(Arm32Disassembler):
             )
 
         return all_insns
+
+    def _literals(self, insns: dict[int, RawInstruction]) -> dict[int, tuple[int, bytes]]:
+        """Valor de cada carga relativa a pc (literal pool), leído del binario."""
+        literals: dict[int, tuple[int, bytes]] = {}
+        for addr, ri in insns.items():
+            ref = literal_reference(ri.mnemonic, ri.operands, addr, thumb=True)
+            if ref is None:
+                continue
+            lit_addr, size = ref
+            for base, data in self._code_sections:
+                if base <= lit_addr and lit_addr + size <= base + len(data):
+                    literals[addr] = (lit_addr, data[lit_addr - base: lit_addr - base + size])
+                    break
+        return literals
+
+    def _capstone(self):
+        cs = getattr(self, '_cs', None)
+        if cs is None:
+            cs = capstone.Cs(
+                capstone.CS_ARCH_ARM,
+                capstone.CS_MODE_THUMB | capstone.CS_MODE_MCLASS,
+            )
+            cs.detail = True
+            self._cs = cs
+        return cs
+
+    def _decode_run(self, data: bytes, address: int):
+        """Decodifica una secuencia de instrucciones a partir de address."""
+        for cs_insn in self._capstone().disasm(data, address):
+            yield _raw(cs_insn)
+
+
+def _raw(cs_insn) -> RawInstruction:
+    regs_read, regs_written = _get_reg_access(cs_insn)
+    return RawInstruction(
+        address=cs_insn.address,
+        mnemonic=cs_insn.mnemonic,
+        operands=cs_insn.op_str,
+        bytes_hex=cs_insn.bytes.hex(),
+        size=cs_insn.size,
+        registers_read=regs_read,
+        registers_written=regs_written,
+    )

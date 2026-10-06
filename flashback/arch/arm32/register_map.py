@@ -22,7 +22,7 @@ _REGS_32 = frozenset({
 # Alias → nombre canónico
 _ALIASES = {
     'sp': 'r13', 'lr': 'r14', 'pc': 'r15',
-    'ip': 'r12', 'fp': 'r11', 'sl': 'r10',
+    'ip': 'r12', 'fp': 'r11', 'sl': 'r10', 'sb': 'r9',
 }
 
 

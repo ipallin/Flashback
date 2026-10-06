@@ -25,6 +25,7 @@ from flashback.core.cfg_builder import (
 from flashback.arch.arm32.instruction_sem import (
     COND_BRANCH_MNEMONICS, UNCOND_JUMP_MNEMONICS,
     CALL_MNEMONICS, SYSCALL_MNEMONICS,
+    classify_arm_flow, literal_reference, resolve_arm_branch_target,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,32 +38,17 @@ _C_RUNTIME = frozenset({
 })
 
 
-def _arm32_resolve_branch_target(mnemonic: str, operands: str) -> int | None:
-    """Resuelve la dirección de destino de una rama ARM32."""
-    o = operands.strip()
-    if not o:
-        return None
-    # Eliminar prefijo # si existe
-    if o.startswith('#'):
-        o = o[1:]
-    try:
-        if o.startswith('0x') or o.startswith('-0x'):
-            return int(o, 16)
-        if o.lstrip('-').isdigit():
-            return int(o)
-    except ValueError:
-        pass
-    return None
-
-
 _ARM32_MNEMONICS = ArchMnemonics(
     cond_branches=COND_BRANCH_MNEMONICS,
     uncond_jumps=UNCOND_JUMP_MNEMONICS | frozenset({'bx'}),
     calls=CALL_MNEMONICS,
-    returns=frozenset({'bx'}),   # bx lr es return; CFGBuilder distingue por operando
+    returns=frozenset({'bx'}),
     syscalls=SYSCALL_MNEMONICS,
     halts=frozenset({'udf', 'bkpt'}),
-    target_resolver=_arm32_resolve_branch_target,
+    target_resolver=resolve_arm_branch_target,
+    # Los conjuntos anteriores son orientativos: la clasificación real la hace
+    # classify_arm_flow por operando (bx lr vs bx r3, pop {pc}, sufijos .w/cond).
+    classifier=classify_arm_flow,
 )
 
 
@@ -125,6 +111,7 @@ class Arm32Disassembler(Disassembler):
             data_hex=data_hex,
             bss_va=bss_va,
             bss_size=bss_size,
+            literals=self._literal_values,
         )
         logger.info(
             f'Desensamblado: {len(func_symbols)} funciones, '
@@ -231,6 +218,7 @@ class Arm32Disassembler(Disassembler):
         cs_thumb.detail = True
 
         all_insns: dict[int, RawInstruction] = {}
+        self._literal_values: dict[int, tuple[int, bytes]] = {}
 
         for section in elf.sections:
             if not section.has(lief.ELF.Section.FLAGS.EXECINSTR):
@@ -245,8 +233,13 @@ class Arm32Disassembler(Disassembler):
             arm_insns   = list(cs_arm.disasm(data, base))
             thumb_insns = list(cs_thumb.disasm(data, base))
             chosen = arm_insns if len(arm_insns) >= len(thumb_insns) else thumb_insns
+            thumb = chosen is thumb_insns
 
             for cs_insn in chosen:
+                ref = literal_reference(cs_insn.mnemonic, cs_insn.op_str, cs_insn.address, thumb)
+                if ref is not None and base <= ref[0] and ref[0] + ref[1] <= base + len(data):
+                    off = ref[0] - base
+                    self._literal_values[cs_insn.address] = (ref[0], data[off:off + ref[1]])
                 regs_read, regs_written = _get_reg_access(cs_insn)
                 all_insns[cs_insn.address] = RawInstruction(
                     address=cs_insn.address,

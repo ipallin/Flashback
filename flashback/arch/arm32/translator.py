@@ -13,13 +13,11 @@ Diferencias clave respecto al Translator base:
 from __future__ import annotations
 
 import logging
-import re
 
-from flashback.core.translator import (
-    Translator, _resolve_direct_target, _split_operands,
-)
+from flashback.core.translator import Translator, _INCLUDES, _resolve_direct_target
 from flashback.core.models import EnrichedCFG, BasicBlock, Instruction
-from flashback.arch.arm32.instruction_sem import ARM32_COND_TO_C
+from flashback.arch.arm32.instruction_sem import ARM32_COND_TO_C, split_arm_mnemonic
+from flashback.arch.arm32 import semantics
 
 logger = logging.getLogger(__name__)
 
@@ -33,16 +31,16 @@ _ARM32_FLAGS = ['N', 'Z', 'C', 'V']
 
 _ARM32_ALIASES = {
     'sp': 'r13', 'lr': 'r14', 'pc': 'r15',
-    'ip': 'r12', 'fp': 'r11', 'sl': 'r10',
+    'ip': 'r12', 'fp': 'r11', 'sl': 'r10', 'sb': 'r9',
 }
 
 # Condiciones de rama ARM32 → expresión C
 _A32_BCC_TO_C: dict[str, str] = ARM32_COND_TO_C
 
-# Terminadores de bloque (ramas condicionales e incondicionales)
-_A32_BRANCH_TERMINATORS = frozenset(
-    {'b', 'bx', 'bl', 'blx'} | {f'b{c}' for c in ARM32_COND_TO_C}
-)
+# Saltos cuya semántica materializa _emit_block_exit (goto / if-goto / switch),
+# con o sin sufijo de condición o de anchura (beq.w, cbz, tbb...). Las llamadas
+# (bl/blx) y los retornos (bx lr, pop {pc}) se traducen en línea.
+_A32_BRANCH_BASES = frozenset({'b', 'cbz', 'cbnz', 'tbb', 'tbh'})
 
 # Libc call map ARM32: args en r0, r1, r2, r3 (AAPCS; extras en pila)
 _A32_LIBC_CALL_MAP: dict[str, tuple[str, list[str]]] = {
@@ -100,13 +98,54 @@ class Arm32Translator(Translator):
         lines.append('/* Aliases convenientes */')
         for alias, target in _ARM32_ALIASES.items():
             lines.append(f'#define {alias} {target}')
+        lines.append('static uint64_t __jt_index = 0;  /* índice de tabla de salto */')
         return '\n'.join(lines)
+
+    def translate(self, cfg: EnrichedCFG) -> str:
+        # Funciones Thumb: las que contienen alguna instrucción de 2 bytes.
+        # Determina el valor que lee pc (dirección + 4 en Thumb, + 8 en ARM).
+        thumb_funcs = {
+            block.function for block in cfg.basic_blocks.values()
+            if any(cfg.instructions[a].size == 2 for a in block.instructions
+                   if a in cfg.instructions)
+        }
+        self._thumb_blocks = {
+            addr for addr, block in cfg.basic_blocks.items() if block.function in thumb_funcs
+        }
+        return super().translate(cfg)
+
+    def _is_thumb(self, insn: Instruction) -> bool:
+        return insn.size == 2 or insn.block in getattr(self, '_thumb_blocks', ())
+
+    def _emit_includes(self) -> str:
+        return '\n'.join(_INCLUDES + ['#include <math.h>'])
 
     def _emit_flags(self) -> str:
         lines = ['/* Flags NZCV ARM32 */']
         for flag in _ARM32_FLAGS:
             lines.append(f'static uint8_t {flag} = 0;')
+        lines.append(semantics.C_RUNTIME)
         return '\n'.join(lines)
+
+    def _emit_function_declarations(self, cfg: EnrichedCFG) -> str:
+        """Declaraciones + despachador de llamadas/saltos a registro (blx rN, bx rN)."""
+        cases = '\n'.join(
+            f'    case 0x{int(addr, 16) & ~1:x}U: func_{addr.replace("0x", "")}(); return;'
+            for addr in sorted(self._defined_funcs, key=lambda a: int(a, 16))
+        )
+        return (
+            f'{super()._emit_function_declarations(cfg)}\n\n'
+            '/* Despachador de llamadas y saltos a registro: resuelve en tiempo de\n'
+            '   ejecución la dirección (puntero a función, bit Thumb incluido). */\n'
+            'static void __call_indirect(uint32_t target, uint32_t site) {\n'
+            '    switch (target & ~1U) {\n'
+            f'{cases}\n'
+            '    }\n'
+            '    fprintf(stderr, "salto/llamada indirecta a 0x%08x no resoluble (desde 0x%08x)\\n",\n'
+            '            (unsigned)target, (unsigned)site);\n'
+            '    abort();\n'
+            '}'
+        )
 
     def _emit_entry_point(self, cfg: EnrichedCFG) -> str:
         entry    = cfg.binary_info.entry_point
@@ -134,8 +173,14 @@ class Arm32Translator(Translator):
             f'}}'
         )
 
+    _jt_capture_at_dispatch = True
+
+    def _jt_index_expr(self, reg: str) -> str:
+        return _ARM32_ALIASES.get(reg, reg)
+
     def _is_branch_terminator(self, mnemonic: str) -> bool:
-        return mnemonic.lower() in _A32_BRANCH_TERMINATORS
+        base, _cond = split_arm_mnemonic(mnemonic)
+        return base in _A32_BRANCH_BASES
 
     def _jcc_condition(self, block: BasicBlock, cfg: EnrichedCFG) -> str:
         if not block.instructions:
@@ -143,13 +188,10 @@ class Arm32Translator(Translator):
         last_insn = cfg.instructions.get(block.instructions[-1])
         if last_insn is None:
             return 'Z'
-        m = last_insn.mnemonic.lower()
-        # Extraer sufijo de condición del mnemónico (p.ej. 'beq' → 'eq')
-        for suffix in sorted(ARM32_COND_TO_C.keys(), key=len, reverse=True):
-            if m.endswith(suffix) and len(m) > len(suffix):
-                cond = ARM32_COND_TO_C[suffix]
-                return cond
-        # cbz/cbnz estilo: en Thumb2, no en ARM clásico; tratar por si acaso
+        # Sufijo de condición del mnemónico ('beq' → 'eq', 'bne.w' → 'ne')
+        m, cond = split_arm_mnemonic(last_insn.mnemonic)
+        if cond:
+            return ARM32_COND_TO_C[cond]
         if m == 'cbz':
             ops = last_insn.operands.split(',')[0].strip()
             reg = _a32_resolve_reg(ops)
@@ -170,12 +212,15 @@ class Arm32Translator(Translator):
         syscall_anns = [a for a in insn.annotations if a.type == 'syscall']
 
         m = insn.mnemonic
-        if ext_calls and m in ('bl', 'blx'):
-            lines.append(self._emit_external_call(ext_calls[0]))
+        base, cond = split_arm_mnemonic(m)
+        if base in ('bl', 'blx'):
+            call = (self._emit_external_call(ext_calls[0]) if ext_calls
+                    else self._emit_call(insn, cfg))
+            if cond:
+                call = f'    if ({ARM32_COND_TO_C[cond]}) {{\n{call}\n    }}'
+            lines.append(call)
         elif syscall_anns and m in ('svc', 'swi'):
             lines.append(self._emit_syscall(syscall_anns[0]))
-        elif m in ('bl', 'blx'):
-            lines.append(self._emit_call(insn, cfg))
         else:
             lines.append(f'    {self._translate_instruction(insn)}')
         return '\n'.join(lines)
@@ -207,188 +252,42 @@ class Arm32Translator(Translator):
 
     def _emit_call(self, insn: Instruction, cfg: EnrichedCFG) -> str:
         ops = insn.operands.strip()
-        # Llamada directa
-        o = ops.lstrip('#')
-        target = _resolve_direct_target(o)
+        site = f'0x{int(insn.address, 16):x}U'
+        target = _resolve_direct_target(ops.lstrip('#'))
         if target and target in self._defined_funcs:
             return f'    func_{target.replace("0x", "")}();'
-        # Llamada indirecta a registro
-        if ops and not ops.startswith('0x'):
-            reg = _a32_resolve_reg(ops)
-            return f'    /* INDIRECT CALL: bl {ops} (r={reg}) — sin resolver */'
-        return f'    /* CALL {ops} — función no definida en este CFG */'
+        if target:
+            # Llamada directa a una dirección sin función en el CFG
+            return f'    __call_indirect({target}U, {site});'
+        reg = _a32_resolve_reg(ops)
+        return f'    __call_indirect({reg}, {site});  /* llamada indirecta */'
+
+    def _svc(self, insn: Instruction) -> str:
+        """svc sin anotación de syscall: llamada al sistema Linux EABI (número en r7)."""
+        return ('r0 = (uint32_t)syscall((long)r7, (long)r0, (long)r1, (long)r2, '
+                '(long)r3, (long)r4, (long)r5);')
 
     def _translate_instruction(self, insn: Instruction) -> str:
-        m   = insn.mnemonic
-        ops = insn.operands
-
-        if m == 'nop':
-            return '/* nop */'
-        if m in ('bkpt', 'udf'):
-            return 'abort();'
-
-        # Instrucción con sufijo de condición: envolverla en if (cond)
-        base_m, cond_c = _strip_condition(m)
-        if cond_c and base_m != m:
-            inner = self._translate_arm32_base(base_m, ops)
-            if inner and not inner.startswith('/* UNSUPPORTED'):
-                return f'if ({cond_c}) {{ {inner} }}'
-            return inner or f'/* UNSUPPORTED: {m} {ops} */'
-
-        return self._translate_arm32_base(m, ops)
-
-    def _translate_arm32_base(self, m: str, ops: str) -> str:
-        """Traduce un mnemónico ARM32 sin sufijo de condición."""
-        if m == 'nop':
-            return '/* nop */'
-        if m == 'bx' and 'lr' in ops:
-            return 'return;'
-        if m in ('pop', 'ldmia', 'ldmfd') and 'pc' in ops:
-            # pop {r4, r5, pc} → restaurar registros y return
-            regs = _parse_reglist(ops)
-            stmts = []
-            for reg in regs:
-                canon = _ARM32_ALIASES.get(reg, reg)
-                if canon == 'r15':  # pc
-                    stmts.append('return;')
-                else:
-                    stmts.append(f'{canon} = SIM_READ32(r13); r13 += 4;')
-            return ' '.join(stmts)
-        if m in ('push', 'stmfd', 'stmdb'):
-            regs = _parse_reglist(ops)
-            stmts = []
-            for reg in reversed(regs):
-                canon = _ARM32_ALIASES.get(reg, reg)
-                stmts.append(f'r13 -= 4; SIM_WRITE32(r13, {canon});')
-            return ' '.join(stmts) if stmts else '/* push {} */'
-        if m in ('pop', 'ldmia', 'ldmfd'):
-            regs = _parse_reglist(ops)
-            stmts = []
-            for reg in regs:
-                canon = _ARM32_ALIASES.get(reg, reg)
-                stmts.append(f'{canon} = SIM_READ32(r13); r13 += 4;')
-            return ' '.join(stmts) if stmts else '/* pop {} */'
-        if m in ('stmia', 'stmea'):
-            # stmia rN!, {r0, r1, ...} or stmia rN, {r0, r1, ...}
-            base_reg, regs = _parse_stm_base_regs(ops)
-            if base_reg and regs:
-                stmts = []
-                for reg in regs:
-                    canon = _ARM32_ALIASES.get(reg, reg)
-                    stmts.append(f'SIM_WRITE32({base_reg}, {canon}); {base_reg} += 4;')
-                return ' '.join(stmts)
-        if m in ('ldmda', 'ldmdb'):
-            base_reg, regs = _parse_stm_base_regs(ops)
-            if base_reg and regs:
-                stmts = []
-                for reg in reversed(regs):
-                    canon = _ARM32_ALIASES.get(reg, reg)
-                    stmts.append(f'{base_reg} -= 4; {canon} = SIM_READ32({base_reg});')
-                return ' '.join(stmts)
-        if m in ('mov', 'movs'):
-            dst, src = _split_operands(ops)
-            if dst and src:
-                canon_d = _ARM32_ALIASES.get(dst.strip(), dst.strip())
-                c_s = _a32_reg_to_c(src)
-                if c_s and canon_d in _ARM32_REGS:
-                    return f'{canon_d} = (uint32_t){c_s};'
-        if m in ('movw',):
-            dst, src = _split_operands(ops)
-            if dst and src:
-                canon_d = _ARM32_ALIASES.get(dst.strip(), dst.strip())
-                c_s = _a32_reg_to_c(src)
-                if c_s and canon_d in _ARM32_REGS:
-                    return f'{canon_d} = ({canon_d} & 0xFFFF0000U) | ((uint32_t){c_s} & 0xFFFFU);'
-        if m in ('movt',):
-            dst, src = _split_operands(ops)
-            if dst and src:
-                canon_d = _ARM32_ALIASES.get(dst.strip(), dst.strip())
-                c_s = _a32_reg_to_c(src)
-                if c_s and canon_d in _ARM32_REGS:
-                    return f'{canon_d} = ({canon_d} & 0x0000FFFFU) | (((uint32_t){c_s} & 0xFFFFU) << 16);'
-        if m in ('mvn', 'mvns'):
-            dst, src = _split_operands(ops)
-            if dst and src:
-                canon_d = _ARM32_ALIASES.get(dst.strip(), dst.strip())
-                c_s = _a32_reg_to_c(src)
-                if c_s and canon_d in _ARM32_REGS:
-                    return f'{canon_d} = ~(uint32_t)({c_s});'
-        if m in ('add', 'adds', 'adc', 'adcs'):
-            return _a32_alu3(ops, '+')
-        if m in ('sub', 'subs', 'sbc', 'sbcs', 'rsb', 'rsbs'):
-            return _a32_alu3(ops, '-')
-        if m in ('and', 'ands'):
-            return _a32_alu3(ops, '&')
-        if m in ('orr', 'orrs'):
-            return _a32_alu3(ops, '|')
-        if m in ('eor', 'eors'):
-            return _a32_alu3(ops, '^')
-        if m in ('bic', 'bics'):
-            dst, src1, src2 = _a32_split3(ops)
-            c_d = _ARM32_ALIASES.get(dst, dst) if dst else None
-            c_1 = _a32_reg_to_c(src1) if src1 else None
-            c_2 = _a32_reg_to_c(src2) if src2 else None
-            if c_d and c_1 and c_2 and c_d in _ARM32_REGS:
-                return f'{c_d} = (uint32_t)({c_1}) & ~(uint32_t)({c_2});'
-        if m in ('lsl', 'lsls', 'asl'):
-            dst, src1, src2 = _a32_split3(ops)
-            c_d = _ARM32_ALIASES.get(dst, dst) if dst else None
-            c_1 = _a32_reg_to_c(src1) if src1 else None
-            c_2 = _a32_reg_to_c(src2) if src2 else None
-            if c_d and c_1 and c_2 and c_d in _ARM32_REGS:
-                return f'{c_d} = (uint32_t)({c_1}) << ((uint32_t)({c_2}) & 31);'
-        if m in ('lsr', 'lsrs'):
-            dst, src1, src2 = _a32_split3(ops)
-            c_d = _ARM32_ALIASES.get(dst, dst) if dst else None
-            c_1 = _a32_reg_to_c(src1) if src1 else None
-            c_2 = _a32_reg_to_c(src2) if src2 else None
-            if c_d and c_1 and c_2 and c_d in _ARM32_REGS:
-                return f'{c_d} = (uint32_t)({c_1}) >> ((uint32_t)({c_2}) & 31);'
-        if m in ('asr', 'asrs'):
-            dst, src1, src2 = _a32_split3(ops)
-            c_d = _ARM32_ALIASES.get(dst, dst) if dst else None
-            c_1 = _a32_reg_to_c(src1) if src1 else None
-            c_2 = _a32_reg_to_c(src2) if src2 else None
-            if c_d and c_1 and c_2 and c_d in _ARM32_REGS:
-                return f'{c_d} = (uint32_t)((int32_t)({c_1}) >> ((uint32_t)({c_2}) & 31));'
-        if m in ('mul', 'muls'):
-            dst, src1, src2 = _a32_split3(ops)
-            c_d = _ARM32_ALIASES.get(dst, dst) if dst else None
-            c_1 = _a32_reg_to_c(src1) if src1 else None
-            c_2 = _a32_reg_to_c(src2) if src2 else None
-            if c_d and c_1 and c_2 and c_d in _ARM32_REGS:
-                return f'{c_d} = (uint32_t)((uint32_t)({c_1}) * (uint32_t)({c_2}));'
-        if m in ('cmp', 'cmps'):
-            dst, src = _split_operands(ops)
-            c_d = _a32_reg_to_c(dst) if dst else None
-            c_s = _a32_reg_to_c(src) if src else None
-            if c_d and c_s:
-                return (f'{{ int32_t __a=(int32_t)({c_d}),__b=(int32_t)({c_s}),__r=__a-__b; '
-                        f'Z=(__r==0); N=(__r<0); '
-                        f'C=((uint32_t)({c_d})>=(uint32_t)({c_s})); '
-                        f'V=(uint8_t)((__a<0)!=(__b<0)&&(__r<0)!=(__a<0)); }}')
-        if m in ('cmn',):
-            dst, src = _split_operands(ops)
-            c_d = _a32_reg_to_c(dst) if dst else None
-            c_s = _a32_reg_to_c(src) if src else None
-            if c_d and c_s:
-                return (f'{{ int32_t __r=(int32_t)({c_d})+(int32_t)({c_s}); '
-                        f'Z=(__r==0); N=(__r<0); }}')
-        if m in ('tst',):
-            dst, src = _split_operands(ops)
-            c_d = _a32_reg_to_c(dst) if dst else None
-            c_s = _a32_reg_to_c(src) if src else None
-            if c_d and c_s:
-                return (f'{{ int32_t __t=(int32_t)(({c_d})&({c_s})); '
-                        f'Z=(__t==0); N=(__t<0); }}')
-        if m in ('ldr', 'ldrb', 'ldrh', 'ldrsb', 'ldrsh', 'ldrt', 'ldrbt'):
-            return _a32_emit_load(m, ops)
-        if m in ('str', 'strb', 'strh', 'strt', 'strbt'):
-            return _a32_emit_store(m, ops)
-
+        m = insn.mnemonic.lower()
+        if split_arm_mnemonic(m)[0] == 'svc':
+            return self._svc(insn)
+        literal = None
+        jump_table = False
+        for ann in insn.annotations:
+            if ann.type == 'literal_load':
+                literal = bytes.fromhex(ann.data)  # type: ignore[attr-defined]
+            elif ann.type == 'jump_table':
+                jump_table = True
+        ctx = semantics.InsnContext(
+            address=int(insn.address, 16), size=insn.size, thumb=self._is_thumb(insn),
+            literal=literal, jump_table=jump_table,
+        )
+        stmt = semantics.translate(insn.mnemonic, insn.operands, ctx)
+        if stmt is not None:
+            return stmt
         return (
-            f'/* UNSUPPORTED: {m} {ops} */\n'
-            f'    fprintf(stderr, "UNSUPPORTED: {m} {ops}\\n");\n'
+            f'/* UNSUPPORTED: {insn.mnemonic} {insn.operands} */\n'
+            f'    fprintf(stderr, "UNSUPPORTED: {insn.mnemonic} {insn.operands}\\n");\n'
             f'    abort();'
         )
 
@@ -397,169 +296,6 @@ class Arm32Translator(Translator):
 # Helpers privados ARM32
 # ---------------------------------------------------------------------------
 
-_ARM32_REGS_SET = frozenset(_ARM32_REGS)
-
-
 def _a32_resolve_reg(name: str) -> str:
     n = name.strip()
     return _ARM32_ALIASES.get(n, n)
-
-
-def _a32_reg_to_c(operand: str) -> str | None:
-    o = operand.strip()
-    o = _ARM32_ALIASES.get(o, o)
-    if o in _ARM32_REGS_SET:
-        return o
-    # Inmediato con # o sin él
-    if o.startswith('#'):
-        o = o[1:]
-    try:
-        if o.startswith('0x') or o.startswith('-0x'):
-            return f'((uint32_t){o}U)'
-        if o.lstrip('-').isdigit():
-            v = int(o)
-            return f'((int32_t){v})' if v < 0 else f'((uint32_t){v}U)'
-    except ValueError:
-        pass
-    return None
-
-
-def _a32_split3(ops: str) -> tuple[str | None, str | None, str | None]:
-    """Divide 'dst, src1, src2' en tres partes (para instrucciones ALU de 3 operandos)."""
-    parts = [p.strip() for p in ops.split(',', 2)]
-    if len(parts) == 3:
-        return parts[0], parts[1], parts[2]
-    if len(parts) == 2:
-        return parts[0], parts[0], parts[1]  # forma de 2 operandos: dst = dst OP src
-    return None, None, None
-
-
-def _a32_alu3(ops: str, op: str) -> str:
-    dst, src1, src2 = _a32_split3(ops)
-    c_d = _ARM32_ALIASES.get(dst, dst) if dst else None
-    c_1 = _a32_reg_to_c(src1) if src1 else None
-    c_2 = _a32_reg_to_c(src2) if src2 else None
-    if c_d and c_1 and c_2 and c_d in _ARM32_REGS_SET:
-        return f'{c_d} = (uint32_t)((uint32_t)({c_1}) {op} (uint32_t)({c_2}));'
-    return f'/* UNSUPPORTED alu3 {op} {ops} */'
-
-
-def _parse_reglist(ops: str) -> list[str]:
-    """Extrae la lista de registros de '{r0, r1, lr}' o '{r0-r3, lr}'."""
-    m = re.search(r'\{([^}]+)\}', ops)
-    if not m:
-        return []
-    inner = m.group(1)
-    regs = []
-    for part in inner.split(','):
-        part = part.strip()
-        if '-' in part and not part.startswith('-'):
-            # rango: r4-r7
-            a, b = part.split('-', 1)
-            a, b = a.strip(), b.strip()
-            a_n = _ARM32_ALIASES.get(a, a)
-            b_n = _ARM32_ALIASES.get(b, b)
-            try:
-                ai = int(a_n[1:]) if a_n.startswith('r') else int(a_n)
-                bi = int(b_n[1:]) if b_n.startswith('r') else int(b_n)
-                regs.extend([f'r{i}' for i in range(ai, bi + 1)])
-            except ValueError:
-                regs.append(a)
-        else:
-            regs.append(part)
-    return regs
-
-
-def _parse_stm_base_regs(ops: str) -> tuple[str | None, list[str]]:
-    """Extrae el registro base y la lista de registros para stm/ldm."""
-    m = re.match(r'(\w+)!?,\s*\{([^}]+)\}', ops)
-    if not m:
-        return None, []
-    base_raw = m.group(1).strip().rstrip('!')
-    base = _ARM32_ALIASES.get(base_raw, base_raw)
-    regs = _parse_reglist(m.group(0))
-    return base, regs
-
-
-def _a32_parse_mem_operand(ops: str, skip_first: bool = True) -> tuple[str | None, str | None]:
-    """
-    Extrae el operando de memoria ARM32.
-    Formato: 'rDst, [rBase, #offset]' o 'rSrc, [rBase, #offset]'.
-    Retorna (reg_data, addr_expr).
-    """
-    parts = ops.split(',', 1)
-    if len(parts) != 2:
-        return None, None
-    reg_data = _ARM32_ALIASES.get(parts[0].strip(), parts[0].strip())
-    mem_part = parts[1].strip()
-    # Quitar corchetes externos
-    if mem_part.startswith('[') and ']' in mem_part:
-        end = mem_part.index(']')
-        inner = mem_part[1:end].strip()
-        # inner puede ser 'r0' o 'r0, #4' o 'r0, r1'
-        inner_parts = [p.strip() for p in inner.split(',', 1)]
-        base_r = _ARM32_ALIASES.get(inner_parts[0], inner_parts[0])
-        if len(inner_parts) == 1:
-            return reg_data, base_r
-        offset = inner_parts[1]
-        if offset.startswith('#'):
-            offset = offset[1:]
-        try:
-            off_val = int(offset, 0)
-            if off_val == 0:
-                return reg_data, base_r
-            sign = '+' if off_val > 0 else '-'
-            return reg_data, f'{base_r} {sign} {abs(off_val)}'
-        except ValueError:
-            off_reg = _ARM32_ALIASES.get(offset, offset)
-            return reg_data, f'{base_r} + {off_reg}'
-    return None, None
-
-
-def _a32_emit_load(mnemonic: str, ops: str) -> str:
-    reg, addr = _a32_parse_mem_operand(ops)
-    if reg is None or addr is None:
-        return f'/* UNSUPPORTED: {mnemonic} {ops} */'
-    if reg not in _ARM32_REGS_SET:
-        return f'/* UNSUPPORTED load dst {reg} */'
-    if mnemonic in ('ldrb', 'ldrbt', 'ldrsb'):
-        signed = 'b' in mnemonic and 's' in mnemonic
-        cast = '(int8_t)' if signed else ''
-        return f'{reg} = (uint32_t){cast}SIM_READ8({addr});'
-    if mnemonic in ('ldrh', 'ldrsh'):
-        signed = 's' in mnemonic
-        cast = '(int16_t)' if signed else ''
-        return f'{reg} = (uint32_t){cast}SIM_READ16({addr});'
-    return f'{reg} = SIM_READ32({addr});'
-
-
-def _a32_emit_store(mnemonic: str, ops: str) -> str:
-    reg, addr = _a32_parse_mem_operand(ops)
-    if reg is None or addr is None:
-        return f'/* UNSUPPORTED: {mnemonic} {ops} */'
-    c_r = _a32_reg_to_c(reg)
-    if c_r is None:
-        return f'/* UNSUPPORTED store src {reg} */'
-    if mnemonic in ('strb', 'strbt'):
-        return f'SIM_WRITE8({addr}, (uint8_t){c_r});'
-    if mnemonic in ('strh',):
-        return f'SIM_WRITE16({addr}, (uint16_t){c_r});'
-    return f'SIM_WRITE32({addr}, {c_r});'
-
-
-def _strip_condition(mnemonic: str) -> tuple[str, str | None]:
-    """
-    Separa el mnemónico base del sufijo de condición ARM32.
-    Ejemplo: 'beq' → ('b', 'Z'), 'addlt' → ('add', '(N != V)').
-    Retorna (base_mnemonic, c_condition) o (mnemonic, None) si no hay sufijo.
-    """
-    m = mnemonic.lower()
-    # Sufijos ordenados por longitud descendente para evitar solapamientos
-    for suffix in sorted(ARM32_COND_TO_C.keys(), key=len, reverse=True):
-        if m.endswith(suffix) and len(m) > len(suffix):
-            base = m[:-len(suffix)]
-            # Evitar falsos positivos: 'movs' no es 'mov' + 's' de condición
-            # Los sufijos de condición son ≥ 2 caracteres; los sufijos 's' son 1
-            if len(suffix) >= 2:
-                return base, ARM32_COND_TO_C[suffix]
-    return m, None
