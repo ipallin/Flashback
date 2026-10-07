@@ -6,6 +6,18 @@ Flashback convierte binarios ELF en código C compilable, ejecutable y trazable.
 
 ---
 
+## Novedades en 1.1.0
+
+- **Semántica ARM / Thumb-2 / VFP completa** (`arch/arm32/semantics.py`), compartida por ARM32 y Cortex-M: flags NZCV exactos, todos los modos de direccionamiento, `ldm`/`stm`, `ldrex`/`strex` y VFP de simple y doble precisión. El C generado para ArduCopter pasa de 75.664 `UNSUPPORTED` a 0 y compila sin errores.
+- **CFG ARM corregido:** retornos Thumb/ARM (`pop {…, pc}`, `ldm sp!`, `mov pc, lr`), saltos anchos `.w`, `cbz`/`cbnz`, funciones que no retornan y tail calls.
+- **Cortex-M:** descubrimiento de código por alcanzabilidad (descarta literal pools), tablas de salto `tbb`/`tbh` emitidas como `switch`, y despachador `__call_indirect` para punteros a función.
+- **Comparación con Ghidra 11.3.2** sobre `arducopter.elf`: 79.193 bloques comunes y 119.541 de 120.495 aristas idénticas.
+- **268 pruebas** en total (+86 de semántica ARM, +54 de flujo de control ARM).
+
+Detalle completo en [`CHANGELOG.md`](CHANGELOG.md).
+
+---
+
 ## Instalación
 
 ```bash
@@ -253,7 +265,9 @@ Flashback-dbg/
 │   │   ├── x86/              ← i386 Linux (completo)
 │   │   ├── arm64/            ← AArch64 Linux (completo)
 │   │   ├── arm32/            ← ARMv7 Linux userspace (completo)
+│   │   │   └── semantics.py  ← Semántica ARM/Thumb-2/VFP compartida con cortexm
 │   │   └── cortexm/          ← ARM Cortex-M bare-metal, hereda de arm32 (completo)
+│   │       └── discovery.py  ← Descubrimiento de código por alcanzabilidad
 │   │
 │   ├── ui/
 │   │   └── cli.py            ← CLI: _detect_arch(), _build_pipeline(), run()
@@ -268,7 +282,13 @@ Flashback-dbg/
 ├── tests/
 │   ├── test_functional.py
 │   ├── test_integration.py
-│   └── test_traceability.py
+│   ├── test_traceability.py
+│   ├── test_cfg_builder.py
+│   ├── test_exporter.py
+│   ├── test_indirect_jumps.py
+│   ├── test_arm_flow.py
+│   ├── test_arm_semantics.py
+│   └── corpus/               ← Corpus de evaluación experimental
 │
 └── docs/
     ├── README.md             ← Referencia rápida: CLI, opciones, pipeline
@@ -295,11 +315,18 @@ Frente a los lifters basados en LLVM IR (McSema, Rev.ng), Flashback traduce dire
 ## Tests
 
 ```bash
-pytest tests/                     # todos los tests
-pytest tests/test_functional.py   # corrección funcional del traductor
-pytest tests/test_integration.py  # pipeline end-to-end
-pytest tests/test_traceability.py # trazabilidad bidireccional
+pytest tests/                        # todos los tests (268)
+pytest tests/test_functional.py      # corrección funcional del traductor
+pytest tests/test_integration.py     # pipeline end-to-end
+pytest tests/test_traceability.py    # trazabilidad bidireccional
+pytest tests/test_cfg_builder.py     # construcción del CFG
+pytest tests/test_exporter.py        # serialización JSON del CFG
+pytest tests/test_indirect_jumps.py  # tablas de salto y llamadas indirectas x86-64
+pytest tests/test_arm_flow.py        # flujo de control ARM/Thumb
+pytest tests/test_arm_semantics.py   # semántica ARM/Thumb-2/VFP
 ```
+
+También disponibles vía `make test`, `make test-cov` y `make check` (lint + tests).
 
 ---
 
@@ -344,10 +371,10 @@ Los 2 casos fallidos corresponden exactamente a limitaciones documentadas: tabla
 |---|---|
 | Tablas de salto con entradas de 4 bytes en no-PIE (GCC patrón movsxd) | x86_64 Fase 1 |
 | Dispatch via array de punteros a función (requiere VSA) | x86_64 Fase 2 |
-| Sin resolución de saltos indirectos en ARM32/ARM64 | arm32, arm64 |
+| Sin resolución de tablas de salto en ARM64; en ARM solo las formas Thumb-2 (`tbb`/`tbh`, `ldr pc, [rB, rI, lsl #2]`) | arm32, arm64, cortexm |
+| Saltos indirectos ARM resueltos solo en runtime vía `__call_indirect` (aborta si el destino no es una función) | arm32, cortexm |
 | Sin recuperación de tipos de alto nivel (structs, clases) | Todas |
-| Sin soporte SIMD/AVX/NEON — instrucciones comentadas | x86_64, arm64 |
-| VFP/FPU Cortex-M comentado como `[VFP/FPU — no simulado]` | cortexm |
+| Sin soporte SIMD/AVX/NEON — instrucciones comentadas o rechazadas | x86_64, arm64, arm32, cortexm |
 | Solo formato ELF (no PE, Mach-O) | Todas |
 | Binarios stripped: function discovery parcial | Todas |
 | Sin análisis de dataflow inter-bloque (VSA) | Todas |

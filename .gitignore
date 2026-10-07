@@ -223,3 +223,4 @@ test_recover.json
 tools/*
 *.elf
 out/
+*.ipynb
